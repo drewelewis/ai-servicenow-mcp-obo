@@ -186,6 +186,33 @@ Flow summary:
 
 This repository now includes a script that creates everything needed in Entra for OBO and prints the exact `.env` values for this server.
 
+Purpose of the Entra registrations:
+
+1. Broker app registration:
+  - Represents this MCP server as a confidential client.
+  - Accepts the incoming user assertion and performs OBO token exchange.
+2. Downstream API app registration:
+  - Represents the resource API audience for delegated access.
+  - Exposes the delegated scope (for example, `user_impersonation`) that the broker requests.
+3. Service principals:
+  - Materialize both app registrations in your tenant so permissions and consent can be enforced.
+4. Delegated permission + admin consent:
+  - Grants the broker app permission to request downstream delegated tokens for signed-in users.
+  - Ensures OBO calls are authorized by policy instead of static shared credentials.
+
+Registration relationship (quick view):
+
+```mermaid
+flowchart LR
+  U[Signed-in User] -->|User assertion token| B[Broker App Registration\nMCP confidential client]
+  B -->|OBO token exchange| T[Entra Token Endpoint]
+  B -->|Delegated permission + consent| D[Downstream API App Registration\nExposes user_impersonation scope]
+  T -->|Scoped delegated access token| B
+  B -->|Bearer token for downstream API audience| S[ServiceNow API]
+  B -. represented in tenant .-> SB[Broker Service Principal]
+  D -. represented in tenant .-> SD[Downstream Service Principal]
+```
+
 Script path:
 
 - `scripts/bootstrap-entra-obo.ps1`

@@ -3,6 +3,8 @@
 ### Changed
 - Added an MCP OBO flow diagram and flow summary to documentation for delegated token exchange visibility: [README.md](README.md).
 - Added ignore rules for generated OBO env output and backup secret files to prevent accidental secret commits: [.gitignore](.gitignore).
+- Added explicit documentation of the purpose of Entra app registrations used in OBO setup: [README.md](README.md).
+- Added a quick visual diagram for Broker and Downstream Entra registration roles in OBO setup: [README.md](README.md).
 
 ## 2026-07-02
 

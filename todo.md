@@ -67,6 +67,8 @@ This file tracks planned and in-progress work for general repository development
 
 ## Done
 
+- [x] Added a mini Mermaid diagram showing Broker vs Downstream Entra registration responsibilities in README. (2026-07-06)
+- [x] Documented the purpose of Entra app registrations in README OBO setup guidance. (2026-07-06)
 - [x] Added ignore rules for generated OBO secret artifacts to prevent accidental commits and blocked pushes. (2026-07-06)
 - [x] Added MCP OBO flow diagram to README for delegated auth visualization. (2026-07-06)
 - [x] Added changelog enforcement skill and repository instruction guardrails. (2026-07-02)
