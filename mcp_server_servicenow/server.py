@@ -10,6 +10,9 @@ import json
 import asyncio
 import logging
 import re
+import time
+import contextvars
+from urllib.parse import urlparse
 from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional, Any, Union, Literal, Tuple
@@ -18,12 +21,53 @@ import requests
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
-from mcp_server_servicenow.nlp import NLPProcessor
-
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.fastmcp.utilities.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Request-scoped assertion used by OBO exchange. This prevents cross-request leakage.
+_request_user_assertion_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "request_user_assertion",
+    default=None,
+)
+
+
+def _get_request_user_assertion() -> Optional[str]:
+    """Read the current request-scoped user assertion token, if available."""
+    return _request_user_assertion_var.get()
+
+
+def _extract_user_assertion_from_ctx(ctx: Optional[Context]) -> Optional[str]:
+    """Extract bearer token from MCP request context transport metadata.
+
+    Priority:
+    1) Authorization header from the active request context.
+    2) Auth middleware context token (if FastMCP auth middleware is enabled).
+    """
+    if ctx is not None:
+        try:
+            request = ctx.request_context.request
+            if request is not None:
+                headers = getattr(request, "headers", None)
+                if headers is not None and hasattr(headers, "get"):
+                    auth_header = headers.get("authorization")
+                    if auth_header and isinstance(auth_header, str) and auth_header.lower().startswith("bearer "):
+                        return auth_header.split(" ", 1)[1].strip()
+        except Exception:
+            # Fall through to middleware-backed token lookup.
+            pass
+
+    try:
+        from mcp.server.auth.middleware.auth_context import get_access_token
+
+        access_token = get_access_token()
+        if access_token and access_token.token:
+            return str(access_token.token).strip()
+    except Exception:
+        pass
+
+    return None
 
 # ServiceNow API models
 class IncidentState(int, Enum):
@@ -138,7 +182,7 @@ class OAuthAuth(Authentication):
     
     def __init__(self, client_id: str, client_secret: str, username: str, password: str, 
                  instance_url: str, token: Optional[str] = None, refresh_token: Optional[str] = None,
-                 token_expiry: Optional[datetime] = None):
+                 token_expiry: Optional[float] = None):
         self.client_id = client_id
         self.client_secret = client_secret
         self.username = username
@@ -150,7 +194,7 @@ class OAuthAuth(Authentication):
         
     async def get_headers(self) -> Dict[str, str]:
         """Get authentication headers for ServiceNow API requests"""
-        if self.token is None or (self.token_expiry and datetime.now() > self.token_expiry):
+        if self.token is None or (self.token_expiry and time.time() > self.token_expiry):
             await self.refresh()
             
         return {"Authorization": f"Bearer {self.token}"}
@@ -188,7 +232,78 @@ class OAuthAuth(Authentication):
             self.token = result["access_token"]
             self.refresh_token = result.get("refresh_token")
             expires_in = result.get("expires_in", 1800)  # Default 30 minutes
-            self.token_expiry = datetime.now().timestamp() + expires_in
+            self.token_expiry = time.time() + float(expires_in)
+
+
+class EntraOBOAuth(Authentication):
+    """Microsoft Entra OAuth On-Behalf-Of authentication for downstream APIs."""
+
+    def __init__(
+        self,
+        tenant_id: str,
+        client_id: str,
+        client_secret: str,
+        user_assertion: Optional[str],
+        scope: str,
+        token_endpoint: Optional[str] = None,
+        allow_static_assertion: bool = False,
+        token: Optional[str] = None,
+        token_expiry: Optional[float] = None,
+    ):
+        self.tenant_id = tenant_id
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.user_assertion = user_assertion
+        self.scope = scope
+        self.token_endpoint = token_endpoint or f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+        self.allow_static_assertion = allow_static_assertion
+        self.token = token
+        self.token_expiry = token_expiry
+
+    async def get_headers(self) -> Dict[str, str]:
+        """Get bearer token headers for ServiceNow API requests via OBO exchange."""
+        if self.token is None or (self.token_expiry and time.time() > self.token_expiry):
+            await self.refresh()
+
+        return {"Authorization": f"Bearer {self.token}"}
+
+    def get_auth(self) -> None:
+        """Get authentication tuple for requests."""
+        return None
+
+    async def refresh(self):
+        """Exchange incoming user assertion for downstream access token using OBO flow."""
+        user_assertion = _get_request_user_assertion()
+        if not user_assertion and self.allow_static_assertion:
+            user_assertion = self.user_assertion
+
+        if not user_assertion:
+            raise RuntimeError(
+                "Missing user assertion in active request context for OBO exchange. "
+                "Provide Authorization: Bearer token on transport request, or explicitly enable static assertion mode for local testing."
+            )
+
+        data = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "requested_token_use": "on_behalf_of",
+            "assertion": user_assertion,
+            "scope": self.scope,
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(self.token_endpoint, data=data)
+            response.raise_for_status()
+            result = response.json()
+
+            access_token = result.get("access_token")
+            if not access_token:
+                raise RuntimeError("OBO token exchange succeeded but no access_token was returned")
+
+            self.token = access_token
+            expires_in = result.get("expires_in", 3600)
+            self.token_expiry = time.time() + float(expires_in)
 
 class ServiceNowClient:
     """Client for interacting with ServiceNow API"""
@@ -197,6 +312,44 @@ class ServiceNowClient:
         self.instance_url = instance_url.rstrip('/')
         self.auth = auth
         self.client = httpx.AsyncClient()
+
+    def _safe_host(self) -> str:
+        """Return host only for diagnostics without exposing secrets."""
+        try:
+            return urlparse(self.instance_url).netloc or self.instance_url
+        except Exception:
+            return self.instance_url
+
+    def _http_error_detail(self, e: httpx.HTTPStatusError) -> str:
+        """Build a user-friendly HTTP error message for common ServiceNow failures."""
+        response = e.response
+        status = response.status_code
+        location = response.headers.get("Location", "")
+        body_preview = (response.text or "").strip().replace("\n", " ")[:300]
+        host = self._safe_host()
+
+        if status in (301, 302, 303, 307, 308):
+            if "login.do" in location or "session_timeout.do" in location:
+                return (
+                    f"ServiceNow redirected to login/session timeout (HTTP {status}) on host '{host}'. "
+                    "This usually means authentication failed or credentials are missing. "
+                    f"Redirect target: {location}"
+                )
+            return (
+                f"Unexpected redirect from ServiceNow (HTTP {status}) on host '{host}'. "
+                f"Redirect target: {location}"
+            )
+
+        if status in (401, 403):
+            return (
+                f"ServiceNow authentication/authorization failed (HTTP {status}) on host '{host}'. "
+                "Verify SERVICENOW_USERNAME/SERVICENOW_PASSWORD or token permissions."
+            )
+
+        return (
+            f"ServiceNow API error (HTTP {status}) on host '{host}'. "
+            f"Response preview: {body_preview}"
+        )
         
     async def close(self):
         """Close the HTTP client"""
@@ -204,18 +357,25 @@ class ServiceNowClient:
         
     async def request(self, method: str, path: str, 
                     params: Optional[Dict[str, Any]] = None,
-                    json_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                    json_data: Optional[Dict[str, Any]] = None,
+                    ctx: Optional[Context] = None) -> Dict[str, Any]:
         """Make a request to the ServiceNow API"""
         url = f"{self.instance_url}{path}"
-        headers = await self.auth.get_headers()
-        headers["Accept"] = "application/json"
-        
-        if isinstance(self.auth, BasicAuth):
-            auth = self.auth.get_auth()
-        else:
-            auth = None
-            
+        assertion_token = None
+
+        if isinstance(self.auth, EntraOBOAuth):
+            assertion = _extract_user_assertion_from_ctx(ctx)
+            assertion_token = _request_user_assertion_var.set(assertion)
+
         try:
+            headers = await self.auth.get_headers()
+            headers["Accept"] = "application/json"
+        
+            if isinstance(self.auth, BasicAuth):
+                auth = self.auth.get_auth()
+            else:
+                auth = None
+            
             response = await self.client.request(
                 method=method,
                 url=url,
@@ -227,23 +387,35 @@ class ServiceNowClient:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
-            logger.error(f"ServiceNow API error: {e.response.text}")
-            raise
+            detail = self._http_error_detail(e)
+            logger.error(detail)
+            raise RuntimeError(detail) from e
+        except httpx.RequestError as e:
+            host = self._safe_host()
+            detail = (
+                f"Network error connecting to ServiceNow host '{host}': {str(e)}. "
+                "Check SERVICENOW_INSTANCE_URL, DNS/VPN connectivity, and proxy settings."
+            )
+            logger.error(detail)
+            raise RuntimeError(detail) from e
+        finally:
+            if assertion_token is not None:
+                _request_user_assertion_var.reset(assertion_token)
             
-    async def get_record(self, table: str, sys_id: str) -> Dict[str, Any]:
+    async def get_record(self, table: str, sys_id: str, ctx: Optional[Context] = None) -> Dict[str, Any]:
         """Get a record by sys_id"""
         if table == "incident" and sys_id.startswith("INC"):
             # This is an incident number, not a sys_id
             logger.warning(f"Attempted to use get_record with incident number instead of sys_id: {sys_id}")
             logger.warning("Redirecting to get_incident_by_number method")
-            result = await self.get_incident_by_number(sys_id)
+            result = await self.get_incident_by_number(sys_id, ctx=ctx)
             if result:
                 return {"result": result}
             else:
                 raise ValueError(f"Incident not found: {sys_id}")
-        return await self.request("GET", f"/api/now/table/{table}/{sys_id}")
+        return await self.request("GET", f"/api/now/table/{table}/{sys_id}", ctx=ctx)
         
-    async def get_records(self, table: str, options: QueryOptions = None) -> Dict[str, Any]:
+    async def get_records(self, table: str, options: QueryOptions = None, ctx: Optional[Context] = None) -> Dict[str, Any]:
         """Get records with query options"""
         if options is None:
             options = QueryOptions()
@@ -263,42 +435,45 @@ class ServiceNowClient:
             direction = "desc" if options.order_direction == "desc" else "asc"
             params["sysparm_order_by"] = f"{options.order_by}^{direction}"
             
-        return await self.request("GET", f"/api/now/table/{table}", params=params)
+        return await self.request("GET", f"/api/now/table/{table}", params=params, ctx=ctx)
     
-    async def create_record(self, table: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def create_record(self, table: str, data: Dict[str, Any], ctx: Optional[Context] = None) -> Dict[str, Any]:
         """Create a new record"""
-        return await self.request("POST", f"/api/now/table/{table}", json_data=data)
+        return await self.request("POST", f"/api/now/table/{table}", json_data=data, ctx=ctx)
         
-    async def update_record(self, table: str, sys_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def update_record(self, table: str, sys_id: str, data: Dict[str, Any], ctx: Optional[Context] = None) -> Dict[str, Any]:
         """Update an existing record"""
-        return await self.request("PUT", f"/api/now/table/{table}/{sys_id}", json_data=data)
+        return await self.request("PUT", f"/api/now/table/{table}/{sys_id}", json_data=data, ctx=ctx)
         
-    async def delete_record(self, table: str, sys_id: str) -> Dict[str, Any]:
+    async def delete_record(self, table: str, sys_id: str, ctx: Optional[Context] = None) -> Dict[str, Any]:
         """Delete a record"""
-        return await self.request("DELETE", f"/api/now/table/{table}/{sys_id}")
+        return await self.request("DELETE", f"/api/now/table/{table}/{sys_id}", ctx=ctx)
         
-    async def get_incident_by_number(self, number: str) -> Dict[str, Any]:
+    async def get_incident_by_number(self, number: str, ctx: Optional[Context] = None) -> Dict[str, Any]:
         """Get an incident by its number"""
         result = await self.request("GET", f"/api/now/table/incident", 
-                                  params={"sysparm_query": f"number={number}", "sysparm_limit": 1})
+                                  params={"sysparm_query": f"number={number}", "sysparm_limit": 1},
+                                  ctx=ctx)
         if result.get("result") and len(result["result"]) > 0:
             return result["result"][0]
         return None
         
-    async def search(self, query: str, table: str = "incident", limit: int = 10) -> Dict[str, Any]:
+    async def search(self, query: str, table: str = "incident", limit: int = 10, ctx: Optional[Context] = None) -> Dict[str, Any]:
         """Search for records using text query"""
         return await self.request("GET", f"/api/now/table/{table}", 
-                                params={"sysparm_query": f"123TEXTQUERY321={query}", "sysparm_limit": limit})
+                                params={"sysparm_query": f"123TEXTQUERY321={query}", "sysparm_limit": limit},
+                                ctx=ctx)
                                 
-    async def get_available_tables(self) -> List[str]:
+    async def get_available_tables(self, ctx: Optional[Context] = None) -> List[str]:
         """Get a list of available tables"""
         result = await self.request("GET", "/api/now/table/sys_db_object", 
-                                  params={"sysparm_fields": "name,label", "sysparm_limit": 100})
+                                  params={"sysparm_fields": "name,label", "sysparm_limit": 100},
+                                  ctx=ctx)
         return result.get("result", [])
         
-    async def get_table_schema(self, table: str) -> Dict[str, Any]:
+    async def get_table_schema(self, table: str, ctx: Optional[Context] = None) -> Dict[str, Any]:
         """Get the schema for a table"""
-        result = await self.request("GET", f"/api/now/ui/meta/{table}")
+        result = await self.request("GET", f"/api/now/ui/meta/{table}", ctx=ctx)
         return result
 
 
@@ -340,10 +515,6 @@ class ServiceNowMCP:
         self.mcp.tool(name="perform_query")(self.perform_query)
         self.mcp.tool(name="add_comment")(self.add_comment)
         self.mcp.tool(name="add_work_notes")(self.add_work_notes)
-        
-        # Register natural language tools
-        self.mcp.tool(name="natural_language_search")(self.natural_language_search)
-        self.mcp.tool(name="natural_language_update")(self.natural_language_update)
         self.mcp.tool(name="update_script")(self.update_script)
         
         # Register prompts
@@ -362,17 +533,17 @@ class ServiceNowMCP:
             asyncio.run(self.close())
         
     # Resource handlers
-    async def list_incidents(self) -> str:
+    async def list_incidents(self, ctx: Context = None) -> str:
         """List recent incidents in ServiceNow"""
         options = QueryOptions(limit=10)
-        result = await self.client.get_records("incident", options)
+        result = await self.client.get_records("incident", options, ctx=ctx)
         return json.dumps(result, indent=2)
         
-    async def get_incident(self, number: str) -> str:
+    async def get_incident(self, number: str, ctx: Context = None) -> str:
         """Get a specific incident by number"""
         try:
             # Always use get_incident_by_number to query by incident number, not get_record
-            incident = await self.client.get_incident_by_number(number)
+            incident = await self.client.get_incident_by_number(number, ctx=ctx)
             if incident:
                 return json.dumps({"result": incident}, indent=2)
             else:
@@ -382,32 +553,32 @@ class ServiceNowMCP:
             logger.error(f"Error getting incident {number}: {str(e)}")
             return json.dumps({"error":{"message":str(e),"detail":"Error occurred while retrieving the record"},"status":"failure"})
         
-    async def list_users(self) -> str:
+    async def list_users(self, ctx: Context = None) -> str:
         """List users in ServiceNow"""
         options = QueryOptions(limit=10)
-        result = await self.client.get_records("sys_user", options)
+        result = await self.client.get_records("sys_user", options, ctx=ctx)
         return json.dumps(result, indent=2)
         
-    async def list_knowledge(self) -> str:
+    async def list_knowledge(self, ctx: Context = None) -> str:
         """List knowledge articles in ServiceNow"""
         options = QueryOptions(limit=10)
-        result = await self.client.get_records("kb_knowledge", options)
+        result = await self.client.get_records("kb_knowledge", options, ctx=ctx)
         return json.dumps(result, indent=2)
         
-    async def get_tables(self) -> str:
+    async def get_tables(self, ctx: Context = None) -> str:
         """Get a list of available tables"""
-        result = await self.client.get_available_tables()
+        result = await self.client.get_available_tables(ctx=ctx)
         return json.dumps({"result": result}, indent=2)
         
-    async def get_table_records(self, table: str) -> str:
+    async def get_table_records(self, table: str, ctx: Context = None) -> str:
         """Get records from a specific table"""
         options = QueryOptions(limit=10)
-        result = await self.client.get_records(table, options)
+        result = await self.client.get_records(table, options, ctx=ctx)
         return json.dumps(result, indent=2)
         
-    async def get_table_schema(self, table: str) -> str:
+    async def get_table_schema(self, table: str, ctx: Context = None) -> str:
         """Get the schema for a table"""
-        result = await self.client.get_table_schema(table)
+        result = await self.client.get_table_schema(table, ctx=ctx)
         return json.dumps(result, indent=2)
     
     # Tool handlers
@@ -467,7 +638,7 @@ class ServiceNowMCP:
             await ctx.info(f"Creating incident: {incident_data.get('short_description', 'No short description')}")
         
         try:
-            result = await self.client.create_record("incident", incident_data)
+            result = await self.client.create_record("incident", incident_data, ctx=ctx)
             
             if ctx:
                 await ctx.info(f"Created incident: {result['result']['number']}")
@@ -499,7 +670,7 @@ class ServiceNowMCP:
         if ctx:
             await ctx.info(f"Looking up incident: {number}")
             
-        incident = await self.client.get_incident_by_number(number)
+        incident = await self.client.get_incident_by_number(number, ctx=ctx)
         
         if not incident:
             error_message = f"Incident {number} not found"
@@ -514,7 +685,7 @@ class ServiceNowMCP:
             await ctx.info(f"Updating incident: {number}")
             
         data = updates.dict(exclude_none=True)
-        result = await self.client.update_record("incident", sys_id, data)
+        result = await self.client.update_record("incident", sys_id, data, ctx=ctx)
         
         return json.dumps(result, indent=2)
         
@@ -538,7 +709,7 @@ class ServiceNowMCP:
         if ctx:
             await ctx.info(f"Searching {table} for: {query}")
             
-        result = await self.client.search(query, table, limit)
+        result = await self.client.search(query, table, limit, ctx=ctx)
         return json.dumps(result, indent=2)
         
     async def get_record(self,
@@ -559,7 +730,7 @@ class ServiceNowMCP:
         if ctx:
             await ctx.info(f"Getting {table} record: {sys_id}")
             
-        result = await self.client.get_record(table, sys_id)
+        result = await self.client.get_record(table, sys_id, ctx=ctx)
         return json.dumps(result, indent=2)
         
     async def perform_query(self,
@@ -593,7 +764,7 @@ class ServiceNowMCP:
             query=query
         )
         
-        result = await self.client.get_records(table, options)
+        result = await self.client.get_records(table, options, ctx=ctx)
         return json.dumps(result, indent=2)
         
     async def add_comment(self,
@@ -614,7 +785,7 @@ class ServiceNowMCP:
         if ctx:
             await ctx.info(f"Adding comment to incident: {number}")
             
-        incident = await self.client.get_incident_by_number(number)
+        incident = await self.client.get_incident_by_number(number, ctx=ctx)
         
         if not incident:
             error_message = f"Incident {number} not found"
@@ -626,7 +797,7 @@ class ServiceNowMCP:
         
         # Add the comment
         update = {"comments": comment}
-        result = await self.client.update_record("incident", sys_id, update)
+        result = await self.client.update_record("incident", sys_id, update, ctx=ctx)
         
         return json.dumps(result, indent=2)
         
@@ -648,7 +819,7 @@ class ServiceNowMCP:
         if ctx:
             await ctx.info(f"Adding work notes to incident: {number}")
             
-        incident = await self.client.get_incident_by_number(number)
+        incident = await self.client.get_incident_by_number(number, ctx=ctx)
         
         if not incident:
             error_message = f"Incident {number} not found"
@@ -660,102 +831,9 @@ class ServiceNowMCP:
         
         # Add the work notes
         update = {"work_notes": work_notes}
-        result = await self.client.update_record("incident", sys_id, update)
+        result = await self.client.update_record("incident", sys_id, update, ctx=ctx)
         
         return json.dumps(result, indent=2)
-    
-    # Natural language tools
-    async def natural_language_search(self,
-                             query: str,
-                             ctx: Context = None) -> str:
-        """
-        Search for records using natural language
-        
-        Examples:
-        - "find all incidents about SAP"
-        - "search for incidents related to email"
-        - "show me all incidents with high priority"
-        
-        Args:
-            query: Natural language query
-            ctx: Optional context object for progress reporting
-            
-        Returns:
-            JSON response containing matching records
-        """
-        if ctx:
-            await ctx.info(f"Processing natural language query: {query}")
-            
-        # Parse the query
-        search_params = NLPProcessor.parse_search_query(query)
-        
-        if ctx:
-            await ctx.info(f"Searching {search_params['table']} with query: {search_params['query']}")
-        
-        # Perform the search
-        options = QueryOptions(
-            limit=search_params['limit'],
-            query=search_params['query']
-        )
-        
-        result = await self.client.get_records(search_params['table'], options)
-        return json.dumps(result, indent=2)
-    
-    async def natural_language_update(self,
-                              command: str,
-                              ctx: Context = None) -> str:
-        """
-        Update a record using natural language
-        
-        Examples:
-        - "Update incident INC0010001 saying I'm working on it"
-        - "Set incident INC0010002 to in progress"
-        - "Close incident INC0010003 with resolution: fixed the issue"
-        
-        Args:
-            command: Natural language update command
-            ctx: Optional context object for progress reporting
-            
-        Returns:
-            JSON response from ServiceNow
-        """
-        if ctx:
-            await ctx.info(f"Processing natural language update: {command}")
-            
-        try:
-            # Parse the command
-            record_number, updates = NLPProcessor.parse_update_command(command)
-            
-            if ctx:
-                await ctx.info(f"Updating {record_number} with: {updates}")
-            
-            # Get the record
-            if record_number.startswith("INC"):
-                incident = await self.client.get_incident_by_number(record_number)
-                if not incident:
-                    error_message = f"Incident {record_number} not found"
-                    if ctx:
-                        await ctx.error(error_message)
-                    return json.dumps({"error": error_message})
-                
-                sys_id = incident['sys_id']
-                table = "incident"
-            else:
-                # Handle other record types if needed
-                error_message = f"Record type not supported: {record_number}"
-                if ctx:
-                    await ctx.error(error_message)
-                return json.dumps({"error": error_message})
-            
-            # Update the record
-            result = await self.client.update_record(table, sys_id, updates)
-            return json.dumps(result, indent=2)
-            
-        except ValueError as e:
-            error_message = str(e)
-            if ctx:
-                await ctx.error(error_message)
-            return json.dumps({"error": error_message})
     
     async def update_script(self,
                    script_update: ScriptUpdateModel,
@@ -782,7 +860,7 @@ class ServiceNowMCP:
             query=query
         )
         
-        result = await self.client.get_records(table, options)
+        result = await self.client.get_records(table, options, ctx=ctx)
         
         if not result.get("result") or len(result["result"]) == 0:
             # Script doesn't exist, create it
@@ -797,7 +875,7 @@ class ServiceNowMCP:
             if script_update.description:
                 data["description"] = script_update.description
                 
-            result = await self.client.create_record(table, data)
+            result = await self.client.create_record(table, data, ctx=ctx)
         else:
             # Script exists, update it
             script = result["result"][0]
@@ -813,7 +891,7 @@ class ServiceNowMCP:
             if script_update.description:
                 data["description"] = script_update.description
                 
-            result = await self.client.update_record(table, sys_id, data)
+            result = await self.client.update_record(table, sys_id, data, ctx=ctx)
             
         return json.dumps(result, indent=2)
     
@@ -877,3 +955,24 @@ def create_oauth_auth(client_id: str, client_secret: str,
                      instance_url: str) -> OAuthAuth:
     """Create OAuthAuth object for ServiceNow authentication"""
     return OAuthAuth(client_id, client_secret, username, password, instance_url)
+
+
+def create_obo_auth(
+    tenant_id: str,
+    client_id: str,
+    client_secret: str,
+    user_assertion: Optional[str],
+    scope: str,
+    token_endpoint: Optional[str] = None,
+    allow_static_assertion: bool = False,
+) -> EntraOBOAuth:
+    """Create Entra OBO authentication object for downstream bearer token acquisition."""
+    return EntraOBOAuth(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        client_secret=client_secret,
+        user_assertion=user_assertion,
+        scope=scope,
+        token_endpoint=token_endpoint,
+        allow_static_assertion=allow_static_assertion,
+    )

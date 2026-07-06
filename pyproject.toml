@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mcp-server-servicenow"
 version = "0.1.0"
-description = "ServiceNow MCP Server for natural language interactions with ServiceNow"
+description = "ServiceNow MCP Server for explicit MCP tool-based interactions with ServiceNow"
 authors = [
     {name = "Michael Buckner", email = "michael.buckner@example.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
-keywords = ["servicenow", "mcp", "ai", "nlp", "automation"]
+keywords = ["servicenow", "mcp", "ai", "automation"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",

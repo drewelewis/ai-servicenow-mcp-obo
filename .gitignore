@@ -22,6 +22,9 @@ ENV/
 
 # Environment variables
 .env
+.env.obo.generated
+.env.bak-*
+.env.bak-manual-*
 
 # Logs
 *.log
