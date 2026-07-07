@@ -1,10 +1,17 @@
 ## 2026-07-07
 
+### Added
+- Added a top-level OBO architecture diagram and layered component overview to explain the identity plane, MCP runtime plane, and ServiceNow-facing integration path: [README.md](README.md).
+
 ### Changed
+- Added architecture guidance for the OBO path, including major components, design boundaries, and authentication alternatives: [README.md](README.md).
+- Updated the OBO flow documentation to reflect implemented incoming-token validation and user-scoped delegated-token caching, while clarifying downstream audience requirements: [README.md](README.md).
 - Replaced the runtime OBO flowchart with a Mermaid sequence diagram to improve step-by-step readability: [README.md](README.md).
 - Simplified the Entra registration diagram to focus on registration and tenant object relationships, separate from runtime flow: [README.md](README.md).
 
 ### Fixed
+- Added incoming Entra bearer token validation for issuer, audience, signature, and expiry on the OBO downstream request path: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py), [mcp_server_servicenow/cli.py](mcp_server_servicenow/cli.py).
+- Added request-scoped auth binding and user-scoped delegated token caching for OBO exchanges, with configurable expected audience and issuer controls: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py), [mcp_server_servicenow/cli.py](mcp_server_servicenow/cli.py), [.env.example](.env.example), [requirements.txt](requirements.txt), [pyproject.toml](pyproject.toml).
 - Updated Mermaid syntax in the Entra registration relationship diagram to improve GitHub renderer compatibility (removed multiline node syntax and normalized edge labels): [README.md](README.md).
 
 ## 2026-07-06

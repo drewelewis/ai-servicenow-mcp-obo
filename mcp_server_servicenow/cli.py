@@ -39,6 +39,8 @@ def main():
     auth_group.add_argument("--obo-user-assertion", help="Static fallback user token for local testing only", default=os.environ.get("SERVICENOW_OBO_USER_ASSERTION"))
     auth_group.add_argument("--obo-scope", help="Downstream scope for OBO exchange", default=os.environ.get("SERVICENOW_OBO_SCOPE"))
     auth_group.add_argument("--obo-token-endpoint", help="Optional custom token endpoint for OBO", default=os.environ.get("SERVICENOW_OBO_TOKEN_ENDPOINT"))
+    auth_group.add_argument("--obo-expected-audience", help="Comma-separated expected incoming token audiences (defaults to OBO client ID)", default=os.environ.get("SERVICENOW_OBO_EXPECTED_AUDIENCE"))
+    auth_group.add_argument("--obo-expected-issuer", help="Comma-separated allowed incoming token issuers (defaults to Entra tenant issuers)", default=os.environ.get("SERVICENOW_OBO_EXPECTED_ISSUER"))
     auth_group.add_argument(
         "--obo-allow-static-assertion",
         help="Allow static OBO assertion fallback (local testing only)",
@@ -92,6 +94,8 @@ def main():
             scope=args.obo_scope,
             token_endpoint=args.obo_token_endpoint,
             allow_static_assertion=args.obo_allow_static_assertion,
+            expected_audiences=args.obo_expected_audience,
+            expected_issuers=args.obo_expected_issuer,
         )
     elif args.token:
         from mcp_server_servicenow.server import create_token_auth

@@ -20,10 +20,10 @@ This file tracks planned and in-progress work for general repository development
 #### P0 (Must - Blockers for Spec Conformance)
 
 - [x] Implement authenticated transport token capture from request/session boundary and reject missing identity context. (2026-07-02)
-- [ ] Add incoming user token validation (issuer, audience, signature, expiry) before tool/resource execution.
-- [ ] Bind validated identity to per-session security context (no process-global user assertion).
+- [x] Add incoming user token validation (issuer, audience, signature, expiry) on the OBO request path before delegated downstream execution. (2026-07-07)
+- [x] Bind validated identity to request-scoped security context for OBO execution. (2026-07-07)
 - [ ] Refactor OBO exchange to resolve subject token from active request context at call time.
-- [ ] Implement user-scoped delegated token cache keyed by identity + audience/scope tuple.
+- [x] Implement user-scoped delegated token cache keyed by identity + audience/scope tuple. (2026-07-07)
 - [ ] Add token refresh safety buffer (30-60 seconds) and deterministic fail-closed behavior on refresh errors.
 - [ ] Remove or guard legacy entrypoints that bypass OBO enforcement path.
 - [ ] Add structured correlation IDs propagated across tool invocation, token exchange, and downstream API call.
@@ -67,6 +67,10 @@ This file tracks planned and in-progress work for general repository development
 
 ## Done
 
+- [x] Added top-level OBO architecture diagram plus component placement and alternative auth patterns in README. (2026-07-07)
+- [x] Implemented incoming Entra token validation and request-scoped auth binding for OBO downstream calls. (2026-07-07)
+- [x] Implemented user-scoped delegated token caching and configurable expected audience/issuer controls for OBO. (2026-07-07)
+- [x] Documented the main OBO architecture components, design boundaries, and authentication alternatives in README. (2026-07-07)
 - [x] Converted OBO runtime flow to Mermaid sequence diagram and separated registration/object relationships for readability. (2026-07-07)
 - [x] Fixed README Mermaid syntax for GitHub-safe rendering in the Entra registration relationship diagram. (2026-07-07)
 - [x] Added a mini Mermaid diagram showing Broker vs Downstream Entra registration responsibilities in README. (2026-07-06)

@@ -160,6 +160,107 @@ The server supports multiple authentication methods:
 
 Use OBO when you want per-user delegated access instead of storing static ServiceNow credentials.
 
+#### Architecture Overview
+
+```mermaid
+flowchart LR
+  subgraph ID[Identity Plane]
+    B[Broker App Registration]
+    E[Entra Token Endpoint]
+    D[Downstream API App Registration]
+  end
+
+  subgraph RT[MCP Runtime Plane]
+    U[User or Upstream MCP Host]
+    I[MCP Server Ingress]
+    C[Validated Request Auth Context]
+    T[Tool Handlers]
+    K[User-scoped OBO Token Cache]
+  end
+
+  subgraph BS[Business System Plane]
+    G[Protected Gateway or API Facade]
+    S[ServiceNow Instance]
+  end
+
+  U -->|Bearer token| I
+  I --> C
+  C --> T
+  C -->|OBO exchange| E
+  B -. broker client identity .-> E
+  D -. audience and delegated scope .-> E
+  E -->|Scoped downstream token| K
+  K --> T
+  T -->|Delegated call| G
+  G --> S
+  T -. alternative direct integration path .-> S
+```
+
+Read this diagram in three layers:
+
+1. Identity plane defines who can mint and accept delegated tokens.
+2. MCP runtime plane validates the incoming user, performs OBO, and executes tools.
+3. Business system plane is where ServiceNow is ultimately reached, either directly or through a protected facade.
+
+#### Design Check
+
+This repository currently models an Entra-based delegated access pattern with these important boundaries:
+
+1. The MCP server acts as the broker confidential client.
+2. The incoming user token is captured from the active MCP request context and used for OBO exchange.
+3. The exchanged token is meant for the configured downstream audience, not automatically for every HTTP endpoint.
+4. A direct ServiceNow call only works with this pattern if the downstream target can validate the Entra-issued bearer token or is fronted by a gateway that can.
+
+Practical implication:
+
+- If you call ServiceNow through an Entra-protected API or gateway, the broker/downstream app-registration model fits well.
+- If you call ServiceNow directly and it is not validating your Entra token as a resource audience, use one of the alternatives below instead of assuming raw OBO is enough by itself.
+
+#### Main Components And Why They Exist
+
+1. MCP client or upstream host:
+  - Originates the request on behalf of a signed-in user.
+  - Supplies the user assertion token that anchors delegated identity.
+2. MCP server ingress:
+  - Receives the MCP request and extracts transport auth metadata.
+  - Prevents tool execution from running without an authenticated caller context.
+3. Request auth context:
+  - Holds the current request's user assertion in request-scoped state.
+  - Prevents one user's delegated token flow from being sourced from another request.
+4. Broker app registration:
+  - Represents this MCP server as a confidential Entra client.
+  - Is required so the server can perform the OBO token exchange.
+5. Entra token endpoint:
+  - Exchanges the upstream user assertion for a scoped downstream access token.
+  - Enforces tenant, consent, and delegated-permission policy.
+6. Downstream API app registration:
+  - Represents the resource audience the broker is requesting access to.
+  - Exposes the delegated scope that the broker asks for during OBO.
+7. Service principals:
+  - Materialize both app registrations inside the tenant.
+  - Are required for consent, policy enforcement, and enterprise administration.
+8. Downstream connector target:
+  - Is the actual HTTP target that receives the delegated bearer token.
+  - In this design, that target should be an Entra-protected API, gateway, or another resource that trusts the issued token.
+9. ServiceNow instance:
+  - Remains the system of record for incidents, tables, scripts, and user-facing operations.
+  - May be reached directly, or indirectly through a gateway or facade depending on the auth pattern you choose.
+
+#### Where Each Component Sits In The Design
+
+- Identity plane:
+  - Broker app registration, downstream app registration, service principals, Entra token endpoint.
+- MCP runtime plane:
+  - MCP client, MCP server ingress, request auth context, tool handlers.
+- Business system plane:
+  - Downstream connector target and the ServiceNow instance.
+
+Production note:
+
+- The current implementation validates incoming Entra bearer tokens for signature, issuer, audience, and expiry before OBO exchange.
+- The current implementation also keeps delegated tokens in a user-scoped in-memory cache keyed by validated identity plus downstream scope and token endpoint.
+- Broader production hardening remains tracked in [todo.md](todo.md), including policy refinement, retry behavior, and full conformance coverage.
+
 #### MCP OBO Flow
 
 ```mermaid
@@ -170,15 +271,15 @@ sequenceDiagram
   participant C as Session Auth Context
   participant O as OBO Token Exchange
   participant E as Entra ID Token Endpoint
-  participant K as Delegated Token Cache
-  participant S as ServiceNow API
+  participant K as User-scoped Delegated Token Cache
+  participant S as Downstream API or ServiceNow Path
 
   U->>I: MCP request with user bearer token
   I->>C: Validate issuer, audience, signature, expiry
   C->>O: Tool call needs downstream access
   O->>E: Exchange user assertion for delegated token
   E-->>O: Short-lived scoped token
-  O->>K: Cache delegated token by user + scope
+  O->>K: Cache token by user identity and scope
   K->>S: Attach bearer token to API call
   S-->>I: Response
   I-->>U: Tool result + audit metadata
@@ -189,8 +290,8 @@ Flow summary:
 1. The MCP request carries the user assertion.
 2. The server validates identity and binds it to a session context.
 3. The server performs OBO exchange for downstream scoped access.
-4. The delegated token is cached per user and scope until near expiry.
-5. ServiceNow is called with the delegated token, then result metadata is returned.
+4. The delegated token is cached per user and downstream scope until near expiry.
+5. Result metadata is returned to the caller.
 
 #### Fully Scriptable Entra Bootstrap
 
@@ -222,6 +323,42 @@ flowchart LR
   B -->|Delegated permission plus admin consent| D
   D -->|Exposes| SC
 ```
+
+#### When This Design Is The Right Fit
+
+Use this brokered OBO design when all of the following are true:
+
+1. Your upstream caller already authenticates users with Entra ID.
+2. You need per-user delegated authorization, not a shared integration identity.
+3. Your downstream API can validate the Entra token directly, or is fronted by a gateway that can.
+
+Optional validation configuration:
+
+- `SERVICENOW_OBO_EXPECTED_AUDIENCE`: comma-separated allowed audiences for incoming bearer tokens. Defaults to the broker app client ID.
+- `SERVICENOW_OBO_EXPECTED_ISSUER`: comma-separated allowed issuers for incoming bearer tokens. Defaults to Entra tenant issuers for the configured tenant.
+
+#### Potential Alternatives
+
+1. Direct ServiceNow basic auth:
+  - Simplest setup.
+  - Uses a shared integration identity, so it does not preserve end-user authorization boundaries.
+2. Direct ServiceNow OAuth with a shared service account:
+  - Better secret hygiene than basic auth.
+  - Still behaves like app-owned access unless you build separate per-user token handling.
+3. ServiceNow-native per-user OAuth:
+  - Best fit when ServiceNow itself is the true resource server and must authorize each user directly.
+  - More operationally complex because you manage ServiceNow OAuth trust and user-consent flows instead of Entra OBO alone.
+4. Entra-protected gateway or facade in front of ServiceNow:
+  - Best fit for this repository's current broker/downstream app-registration shape.
+  - Lets the gateway validate Entra tokens, enforce policy, and then call ServiceNow with its own trusted backend mechanism.
+5. App-only or client-credentials integration:
+  - Useful for unattended automation or batch operations.
+  - Not appropriate when you must preserve the initiating user's security boundary.
+
+Recommended decision rule:
+
+- If the goal is true per-user delegation into a resource that trusts Entra tokens, keep the brokered OBO design.
+- If the goal is direct ServiceNow access and ServiceNow is the real authorization authority, prefer ServiceNow-native OAuth or a gateway pattern.
 
 Script path:
 

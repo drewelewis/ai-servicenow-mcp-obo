@@ -11,15 +11,19 @@ import asyncio
 import logging
 import re
 import time
+import hashlib
 import contextvars
 from urllib.parse import urlparse
 from datetime import datetime
+from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional, Any, Union, Literal, Tuple
 
 import requests
 import httpx
+import jwt
 from pydantic import BaseModel, Field, field_validator
+from jwt import PyJWKClient
 
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.fastmcp.utilities.logging import get_logger
@@ -31,11 +35,28 @@ _request_user_assertion_var: contextvars.ContextVar[Optional[str]] = contextvars
     "request_user_assertion",
     default=None,
 )
+_request_auth_state_var: contextvars.ContextVar[Optional["RequestAuthState"]] = contextvars.ContextVar(
+    "request_auth_state",
+    default=None,
+)
+
+
+@dataclass(frozen=True)
+class RequestAuthState:
+    """Validated request-scoped auth state for delegated OBO flows."""
+
+    user_assertion: str
+    claims: Dict[str, Any]
 
 
 def _get_request_user_assertion() -> Optional[str]:
     """Read the current request-scoped user assertion token, if available."""
     return _request_user_assertion_var.get()
+
+
+def _get_request_auth_state() -> Optional[RequestAuthState]:
+    """Read the current request-scoped validated auth state, if available."""
+    return _request_auth_state_var.get()
 
 
 def _extract_user_assertion_from_ctx(ctx: Optional[Context]) -> Optional[str]:
@@ -68,6 +89,85 @@ def _extract_user_assertion_from_ctx(ctx: Optional[Context]) -> Optional[str]:
         pass
 
     return None
+
+
+def _split_csv_values(raw_value: Optional[str]) -> List[str]:
+    """Parse a comma-separated config string into a normalized list."""
+    if not raw_value:
+        return []
+
+    return [value.strip() for value in raw_value.split(",") if value.strip()]
+
+
+class IncomingTokenValidationError(RuntimeError):
+    """Raised when an incoming OBO assertion token is missing or invalid."""
+
+
+class EntraTokenValidator:
+    """Validate incoming Entra access tokens for issuer, audience, signature, and expiry."""
+
+    def __init__(
+        self,
+        tenant_id: str,
+        expected_audiences: List[str],
+        expected_issuers: Optional[List[str]] = None,
+        jwks_uri: Optional[str] = None,
+    ):
+        self.tenant_id = tenant_id
+        self.expected_audiences = expected_audiences
+        normalized_tenant = tenant_id.strip("/")
+        self.expected_issuers = expected_issuers or [
+            f"https://login.microsoftonline.com/{normalized_tenant}/v2.0",
+            f"https://sts.windows.net/{normalized_tenant}/",
+        ]
+        self.jwks_client = PyJWKClient(
+            jwks_uri or f"https://login.microsoftonline.com/{normalized_tenant}/discovery/v2.0/keys"
+        )
+
+    def validate(self, token: str) -> Dict[str, Any]:
+        """Validate token signature and core claims, returning decoded claims on success."""
+        try:
+            signing_key = self.jwks_client.get_signing_key_from_jwt(token)
+            claims = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256", "RS384", "RS512"],
+                audience=self.expected_audiences,
+                options={
+                    "require": ["exp", "iss", "aud"],
+                    "verify_signature": True,
+                    "verify_exp": True,
+                    "verify_aud": True,
+                    "verify_iss": False,
+                },
+            )
+        except jwt.PyJWTError as exc:
+            raise IncomingTokenValidationError(
+                "Incoming user token validation failed. Verify issuer, audience, signature, and expiry."
+            ) from exc
+        except Exception as exc:
+            raise IncomingTokenValidationError(
+                "Unable to validate incoming user token against Entra signing keys."
+            ) from exc
+
+        issuer = str(claims.get("iss", "")).strip()
+        if issuer not in self.expected_issuers:
+            raise IncomingTokenValidationError(
+                "Incoming user token issuer is not allowed for this tenant configuration."
+            )
+
+        token_tenant = str(claims.get("tid", "")).strip()
+        if token_tenant and token_tenant != self.tenant_id:
+            raise IncomingTokenValidationError(
+                "Incoming user token tenant does not match configured OBO tenant."
+            )
+
+        if not claims.get("oid") and not claims.get("sub"):
+            raise IncomingTokenValidationError(
+                "Incoming user token is missing subject identity required for delegated access."
+            )
+
+        return claims
 
 # ServiceNow API models
 class IncidentState(int, Enum):
@@ -247,6 +347,9 @@ class EntraOBOAuth(Authentication):
         scope: str,
         token_endpoint: Optional[str] = None,
         allow_static_assertion: bool = False,
+        expected_audiences: Optional[List[str]] = None,
+        expected_issuers: Optional[List[str]] = None,
+        cache_safety_buffer_seconds: int = 60,
         token: Optional[str] = None,
         token_expiry: Optional[float] = None,
     ):
@@ -257,12 +360,92 @@ class EntraOBOAuth(Authentication):
         self.scope = scope
         self.token_endpoint = token_endpoint or f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
         self.allow_static_assertion = allow_static_assertion
+        self.cache_safety_buffer_seconds = cache_safety_buffer_seconds
         self.token = token
         self.token_expiry = token_expiry
+        self._token_cache: Dict[str, Tuple[str, float]] = {}
+        self._validator = EntraTokenValidator(
+            tenant_id=tenant_id,
+            expected_audiences=expected_audiences or [client_id],
+            expected_issuers=expected_issuers,
+        )
+
+    def validate_user_assertion(self, user_assertion: str) -> Dict[str, Any]:
+        """Validate the incoming user assertion before any downstream token exchange."""
+        return self._validator.validate(user_assertion)
+
+    def bind_request_auth(self, user_assertion: Optional[str]) -> Tuple[Optional[contextvars.Token], Optional[contextvars.Token]]:
+        """Validate and bind request-scoped auth state for the current downstream call path."""
+        assertion_value = user_assertion
+        claims = None
+
+        if assertion_value:
+            claims = self.validate_user_assertion(assertion_value)
+        elif self.allow_static_assertion and self.user_assertion:
+            assertion_value = self.user_assertion
+            claims = self.validate_user_assertion(assertion_value)
+        else:
+            raise IncomingTokenValidationError(
+                "Missing incoming user token for OBO exchange. Provide an Authorization bearer token on the MCP request."
+            )
+
+        assertion_token = _request_user_assertion_var.set(assertion_value)
+        auth_state_token = _request_auth_state_var.set(RequestAuthState(assertion_value, claims))
+        return assertion_token, auth_state_token
+
+    def reset_request_auth(
+        self,
+        assertion_token: Optional[contextvars.Token],
+        auth_state_token: Optional[contextvars.Token],
+    ) -> None:
+        """Clear request-scoped auth state after downstream call completion."""
+        if auth_state_token is not None:
+            _request_auth_state_var.reset(auth_state_token)
+        if assertion_token is not None:
+            _request_user_assertion_var.reset(assertion_token)
+
+    def _build_cache_key(self, claims: Dict[str, Any]) -> str:
+        """Create a non-reversible cache key scoped to user identity and downstream audience tuple."""
+        subject = str(claims.get("oid") or claims.get("sub") or "")
+        tenant = str(claims.get("tid") or self.tenant_id)
+        cache_material = f"{tenant}|{subject}|{self.scope}|{self.token_endpoint}"
+        return hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
+
+    def _get_cached_token(self, cache_key: str) -> Optional[Tuple[str, float]]:
+        """Return a cached token only when it remains outside the safety buffer."""
+        cached = self._token_cache.get(cache_key)
+        if not cached:
+            return None
+
+        token_value, expiry = cached
+        if time.time() >= (expiry - self.cache_safety_buffer_seconds):
+            self._token_cache.pop(cache_key, None)
+            return None
+
+        return token_value, expiry
 
     async def get_headers(self) -> Dict[str, str]:
         """Get bearer token headers for ServiceNow API requests via OBO exchange."""
-        if self.token is None or (self.token_expiry and time.time() > self.token_expiry):
+        auth_state = _get_request_auth_state()
+
+        if auth_state is not None:
+            cache_key = self._build_cache_key(auth_state.claims)
+            cached = self._get_cached_token(cache_key)
+            if cached is not None:
+                token_value, expiry = cached
+                return {"Authorization": f"Bearer {token_value}"}
+
+            await self.refresh(auth_state=auth_state)
+            cached = self._get_cached_token(cache_key)
+            if cached is None:
+                raise RuntimeError("OBO token acquisition failed to populate the delegated token cache")
+
+            token_value, expiry = cached
+            self.token = token_value
+            self.token_expiry = expiry
+            return {"Authorization": f"Bearer {token_value}"}
+
+        if self.token is None or (self.token_expiry and time.time() >= (self.token_expiry - self.cache_safety_buffer_seconds)):
             await self.refresh()
 
         return {"Authorization": f"Bearer {self.token}"}
@@ -271,11 +454,22 @@ class EntraOBOAuth(Authentication):
         """Get authentication tuple for requests."""
         return None
 
-    async def refresh(self):
+    async def refresh(self, auth_state: Optional[RequestAuthState] = None):
         """Exchange incoming user assertion for downstream access token using OBO flow."""
-        user_assertion = _get_request_user_assertion()
+        active_auth_state = auth_state or _get_request_auth_state()
+        user_assertion = active_auth_state.user_assertion if active_auth_state else _get_request_user_assertion()
+        cache_key = self._build_cache_key(active_auth_state.claims) if active_auth_state else None
+
+        if cache_key:
+            cached = self._get_cached_token(cache_key)
+            if cached is not None:
+                self.token, self.token_expiry = cached
+                return
+
         if not user_assertion and self.allow_static_assertion:
             user_assertion = self.user_assertion
+            if user_assertion:
+                self.validate_user_assertion(user_assertion)
 
         if not user_assertion:
             raise RuntimeError(
@@ -301,9 +495,13 @@ class EntraOBOAuth(Authentication):
             if not access_token:
                 raise RuntimeError("OBO token exchange succeeded but no access_token was returned")
 
-            self.token = access_token
             expires_in = result.get("expires_in", 3600)
-            self.token_expiry = time.time() + float(expires_in)
+            expiry = time.time() + float(expires_in)
+            self.token = access_token
+            self.token_expiry = expiry
+
+            if cache_key:
+                self._token_cache[cache_key] = (access_token, expiry)
 
 class ServiceNowClient:
     """Client for interacting with ServiceNow API"""
@@ -362,10 +560,11 @@ class ServiceNowClient:
         """Make a request to the ServiceNow API"""
         url = f"{self.instance_url}{path}"
         assertion_token = None
+        auth_state_token = None
 
         if isinstance(self.auth, EntraOBOAuth):
             assertion = _extract_user_assertion_from_ctx(ctx)
-            assertion_token = _request_user_assertion_var.set(assertion)
+            assertion_token, auth_state_token = self.auth.bind_request_auth(assertion)
 
         try:
             headers = await self.auth.get_headers()
@@ -398,9 +597,13 @@ class ServiceNowClient:
             )
             logger.error(detail)
             raise RuntimeError(detail) from e
+        except IncomingTokenValidationError as e:
+            detail = str(e)
+            logger.error(detail)
+            raise RuntimeError(detail) from e
         finally:
-            if assertion_token is not None:
-                _request_user_assertion_var.reset(assertion_token)
+            if isinstance(self.auth, EntraOBOAuth):
+                self.auth.reset_request_auth(assertion_token, auth_state_token)
             
     async def get_record(self, table: str, sys_id: str, ctx: Optional[Context] = None) -> Dict[str, Any]:
         """Get a record by sys_id"""
@@ -965,8 +1168,21 @@ def create_obo_auth(
     scope: str,
     token_endpoint: Optional[str] = None,
     allow_static_assertion: bool = False,
+    expected_audiences: Optional[Union[str, List[str]]] = None,
+    expected_issuers: Optional[Union[str, List[str]]] = None,
 ) -> EntraOBOAuth:
     """Create Entra OBO authentication object for downstream bearer token acquisition."""
+    parsed_audiences = (
+        _split_csv_values(expected_audiences)
+        if isinstance(expected_audiences, str)
+        else (expected_audiences or [client_id])
+    )
+    parsed_issuers = (
+        _split_csv_values(expected_issuers)
+        if isinstance(expected_issuers, str)
+        else expected_issuers
+    )
+
     return EntraOBOAuth(
         tenant_id=tenant_id,
         client_id=client_id,
@@ -975,4 +1191,6 @@ def create_obo_auth(
         scope=scope,
         token_endpoint=token_endpoint,
         allow_static_assertion=allow_static_assertion,
+        expected_audiences=parsed_audiences,
+        expected_issuers=parsed_issuers,
     )
