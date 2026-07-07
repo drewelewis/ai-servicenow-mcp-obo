@@ -52,7 +52,9 @@ Notes:
 
 ### Command Line
 
-Run the server using the Python module:
+Run the server using the Python module.
+
+#### Example Using Basic Auth
 
 ```bash
 python -m mcp_server_servicenow.cli --url "https://your-instance.service-now.com/" --username "your-username" --password "your-password"
@@ -75,6 +77,48 @@ $env:SERVICENOW_USERNAME="your-username"
 $env:SERVICENOW_PASSWORD="your-password"
 python -m mcp_server_servicenow.cli
 ```
+
+#### Example Using Entra OBO
+
+Use OBO when your upstream caller provides a user bearer token and you want delegated downstream access.
+
+```bash
+python -m mcp_server_servicenow.cli \
+  --url "https://your-instance.service-now.com/" \
+  --obo-tenant-id "<tenant-guid>" \
+  --obo-client-id "<broker-app-client-id>" \
+  --obo-client-secret "<broker-app-client-secret>" \
+  --obo-scope "api://<downstream-app-id>/.default"
+```
+
+Or use environment variables:
+
+```bash
+export SERVICENOW_INSTANCE_URL="https://your-instance.service-now.com/"
+export SERVICENOW_OBO_TENANT_ID="<tenant-guid>"
+export SERVICENOW_OBO_CLIENT_ID="<broker-app-client-id>"
+export SERVICENOW_OBO_CLIENT_SECRET="<broker-app-client-secret>"
+export SERVICENOW_OBO_SCOPE="api://<downstream-app-id>/.default"
+python -m mcp_server_servicenow.cli
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:SERVICENOW_INSTANCE_URL="https://your-instance.service-now.com/"
+$env:SERVICENOW_OBO_TENANT_ID="<tenant-guid>"
+$env:SERVICENOW_OBO_CLIENT_ID="<broker-app-client-id>"
+$env:SERVICENOW_OBO_CLIENT_SECRET="<broker-app-client-secret>"
+$env:SERVICENOW_OBO_SCOPE="api://<downstream-app-id>/.default"
+python -m mcp_server_servicenow.cli
+```
+
+Auth selection rules:
+
+1. OBO and basic auth are both supported, but they are separate auth modes.
+2. If complete OBO settings are present, the CLI selects OBO.
+3. If OBO is not configured, the CLI can fall back to token auth, OAuth, or basic username/password.
+4. Do not assume `--username` and `--password` are combined with OBO; they are used for the non-OBO auth paths.
 
 ### MCP Explorer (Inspector) Quick Start
 
