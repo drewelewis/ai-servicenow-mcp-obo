@@ -69,6 +69,8 @@ This file tracks planned and in-progress work for general repository development
 
 ## Done
 
+- [x] Added explicit ServiceNow OAuth and bearer-token variable guidance comments in local .env auth configuration. (2026-07-07)
+- [x] Added inline authentication-setting comments to local .env so each auth variable purpose is explicit. (2026-07-07)
 - [x] Restructured README so each authentication mode has its own usage section and clearer decision guidance. (2026-07-07)
 - [x] Clarified README usage examples to separate basic auth from Entra OBO and documented CLI auth precedence. (2026-07-07)
 - [x] Corrected README installation guidance to remove inherited PyPI and upstream-source instructions and document this repository as source-only. (2026-07-07)
