@@ -67,6 +67,8 @@ This file tracks planned and in-progress work for general repository development
 
 ## Done
 
+- [x] Converted OBO runtime flow to Mermaid sequence diagram and separated registration/object relationships for readability. (2026-07-07)
+- [x] Fixed README Mermaid syntax for GitHub-safe rendering in the Entra registration relationship diagram. (2026-07-07)
 - [x] Added a mini Mermaid diagram showing Broker vs Downstream Entra registration responsibilities in README. (2026-07-06)
 - [x] Documented the purpose of Entra app registrations in README OBO setup guidance. (2026-07-06)
 - [x] Added ignore rules for generated OBO secret artifacts to prevent accidental commits and blocked pushes. (2026-07-06)

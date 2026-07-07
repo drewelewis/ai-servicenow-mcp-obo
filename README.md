@@ -163,15 +163,25 @@ Use OBO when you want per-user delegated access instead of storing static Servic
 #### MCP OBO Flow
 
 ```mermaid
-flowchart LR
-  A[User / MCP Client] -->|1. MCP request with user bearer token| B[MCP Server Ingress]
-  B -->|2. Validate issuer audience signature expiry| C[Session Auth Context]
-  C -->|3. Tool call needs downstream access| D[OBO Token Exchange]
-  D -->|4. Exchange user assertion for delegated token| E[Entra ID Token Endpoint]
-  E -->|5. Short-lived scoped token| F[Delegated Token Cache]
-  F -->|6. Attach token to API call| G[ServiceNow API]
-  G -->|7. Response| B
-  B -->|8. Tool result + audit metadata| A
+sequenceDiagram
+  autonumber
+  participant U as User / MCP Client
+  participant I as MCP Server Ingress
+  participant C as Session Auth Context
+  participant O as OBO Token Exchange
+  participant E as Entra ID Token Endpoint
+  participant K as Delegated Token Cache
+  participant S as ServiceNow API
+
+  U->>I: MCP request with user bearer token
+  I->>C: Validate issuer, audience, signature, expiry
+  C->>O: Tool call needs downstream access
+  O->>E: Exchange user assertion for delegated token
+  E-->>O: Short-lived scoped token
+  O->>K: Cache delegated token by user + scope
+  K->>S: Attach bearer token to API call
+  S-->>I: Response
+  I-->>U: Tool result + audit metadata
 ```
 
 Flow summary:
@@ -204,13 +214,13 @@ Registration relationship (quick view):
 
 ```mermaid
 flowchart LR
-  U[Signed-in User] -->|User assertion token| B[Broker App Registration\nMCP confidential client]
-  B -->|OBO token exchange| T[Entra Token Endpoint]
-  B -->|Delegated permission + consent| D[Downstream API App Registration\nExposes user_impersonation scope]
-  T -->|Scoped delegated access token| B
-  B -->|Bearer token for downstream API audience| S[ServiceNow API]
-  B -. represented in tenant .-> SB[Broker Service Principal]
-  D -. represented in tenant .-> SD[Downstream Service Principal]
+  B[Broker App Registration - MCP confidential client]
+  D[Downstream API App Registration]
+  SC[user_impersonation delegated scope]
+  B -. "represented in tenant" .-> SB[Broker Service Principal]
+  D -. "represented in tenant" .-> SD[Downstream Service Principal]
+  B -->|Delegated permission plus admin consent| D
+  D -->|Exposes| SC
 ```
 
 Script path:

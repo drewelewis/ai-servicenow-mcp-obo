@@ -1,3 +1,12 @@
+## 2026-07-07
+
+### Changed
+- Replaced the runtime OBO flowchart with a Mermaid sequence diagram to improve step-by-step readability: [README.md](README.md).
+- Simplified the Entra registration diagram to focus on registration and tenant object relationships, separate from runtime flow: [README.md](README.md).
+
+### Fixed
+- Updated Mermaid syntax in the Entra registration relationship diagram to improve GitHub renderer compatibility (removed multiline node syntax and normalized edge labels): [README.md](README.md).
+
 ## 2026-07-06
 
 ### Changed
