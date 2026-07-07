@@ -40,6 +40,7 @@ This file tracks planned and in-progress work for general repository development
 #### P2 (Operational Excellence and Release Gates)
 
 - [ ] Build conformance test suite mapped to obo_guide.md MUST/SHOULD requirements.
+- [ ] Add automated regression tests covering incoming token validation, request-scoped auth binding, and user-scoped OBO token cache behavior.
 - [ ] Add negative security tests (expired token, tampered signature, wrong audience, missing scope).
 - [ ] Add concurrency/isolation tests validating no cross-session token leakage under load.
 - [ ] Add observability checks ensuring no tokens/secrets are emitted in logs.
@@ -64,9 +65,11 @@ This file tracks planned and in-progress work for general repository development
 ## In Progress
 
 - [ ] Verify obo_guide.md requirements against current implementation and capture all missing gaps as actionable tasks.
+- [ ] Run manual regression testing for OBO auth hardening and architecture/documentation updates.
 
 ## Done
 
+- [x] Corrected README installation guidance to remove inherited PyPI and upstream-source instructions and document this repository as source-only. (2026-07-07)
 - [x] Added top-level OBO architecture diagram plus component placement and alternative auth patterns in README. (2026-07-07)
 - [x] Implemented incoming Entra token validation and request-scoped auth binding for OBO downstream calls. (2026-07-07)
 - [x] Implemented user-scoped delegated token caching and configurable expected audience/issuer controls for OBO. (2026-07-07)

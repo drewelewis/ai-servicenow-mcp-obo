@@ -32,19 +32,21 @@ A Model Context Protocol (MCP) server that interfaces with ServiceNow, allowing 
 
 ## Installation
 
-### From PyPI
-
-```bash
-pip install mcp-server-servicenow
-```
+This repository is currently supported as a source checkout only.
 
 ### From Source
 
 ```bash
-git clone https://github.com/michaelbuckner/servicenow-mcp.git
-cd servicenow-mcp
+git clone https://github.com/drewelewis/ai-servicenow-mcp-obo.git
+cd ai-servicenow-mcp-obo
 pip install -e .
 ```
+
+Notes:
+
+1. Do not use the original upstream repository URL for this fork's OBO-specific changes.
+2. Do not rely on a PyPI package for this repo's current feature set.
+3. On Windows, you can also use the provided helper scripts for local setup: `_env_create.bat`, `_env_activate.bat`, and `_install.bat`.
 
 ## Usage
 

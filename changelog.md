@@ -4,6 +4,7 @@
 - Added a top-level OBO architecture diagram and layered component overview to explain the identity plane, MCP runtime plane, and ServiceNow-facing integration path: [README.md](README.md).
 
 ### Changed
+- Corrected the installation section to document this repository as source-only and to use the current fork URL instead of inherited upstream/PyPI guidance: [README.md](README.md).
 - Added architecture guidance for the OBO path, including major components, design boundaries, and authentication alternatives: [README.md](README.md).
 - Updated the OBO flow documentation to reflect implemented incoming-token validation and user-scoped delegated-token caching, while clarifying downstream audience requirements: [README.md](README.md).
 - Replaced the runtime OBO flowchart with a Mermaid sequence diagram to improve step-by-step readability: [README.md](README.md).
