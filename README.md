@@ -54,13 +54,19 @@ Notes:
 
 Run the server using the Python module.
 
-#### Example Using Basic Auth
+Choose one authentication mode per deployment.
+
+#### Usage: Basic Auth
+
+Compatibility path only. Use this only if your ServiceNow tenant still allows direct username/password authentication.
+
+Command-line example:
 
 ```bash
 python -m mcp_server_servicenow.cli --url "https://your-instance.service-now.com/" --username "your-username" --password "your-password"
 ```
 
-Or use environment variables:
+Environment-variable example:
 
 ```bash
 export SERVICENOW_INSTANCE_URL="https://your-instance.service-now.com/"
@@ -69,7 +75,7 @@ export SERVICENOW_PASSWORD="your-password"
 python -m mcp_server_servicenow.cli
 ```
 
-On Windows PowerShell:
+Windows PowerShell example:
 
 ```powershell
 $env:SERVICENOW_INSTANCE_URL="https://your-instance.service-now.com/"
@@ -78,9 +84,55 @@ $env:SERVICENOW_PASSWORD="your-password"
 python -m mcp_server_servicenow.cli
 ```
 
-#### Example Using Entra OBO
+#### Usage: Bearer Token
+
+Use this mode when you already have a valid ServiceNow bearer token and want the server to reuse it directly.
+
+Command-line example:
+
+```bash
+python -m mcp_server_servicenow.cli --url "https://your-instance.service-now.com/" --token "<servicenow-access-token>"
+```
+
+Environment-variable example:
+
+```bash
+export SERVICENOW_INSTANCE_URL="https://your-instance.service-now.com/"
+export SERVICENOW_TOKEN="<servicenow-access-token>"
+python -m mcp_server_servicenow.cli
+```
+
+#### Usage: ServiceNow OAuth
+
+Use this mode when ServiceNow itself is the resource server and your tenant does not permit basic auth or you want a stronger direct-auth pattern.
+
+Command-line example:
+
+```bash
+python -m mcp_server_servicenow.cli \
+  --url "https://your-instance.service-now.com/" \
+  --client-id "<servicenow-oauth-client-id>" \
+  --client-secret "<servicenow-oauth-client-secret>" \
+  --username "<servicenow-username>" \
+  --password "<servicenow-password>"
+```
+
+Environment-variable example:
+
+```bash
+export SERVICENOW_INSTANCE_URL="https://your-instance.service-now.com/"
+export SERVICENOW_CLIENT_ID="<servicenow-oauth-client-id>"
+export SERVICENOW_CLIENT_SECRET="<servicenow-oauth-client-secret>"
+export SERVICENOW_USERNAME="<servicenow-username>"
+export SERVICENOW_PASSWORD="<servicenow-password>"
+python -m mcp_server_servicenow.cli
+```
+
+#### Usage: Entra OBO
 
 Use OBO when your upstream caller provides a user bearer token and you want delegated downstream access.
+
+Command-line example:
 
 ```bash
 python -m mcp_server_servicenow.cli \
@@ -91,7 +143,7 @@ python -m mcp_server_servicenow.cli \
   --obo-scope "api://<downstream-app-id>/.default"
 ```
 
-Or use environment variables:
+Environment-variable example:
 
 ```bash
 export SERVICENOW_INSTANCE_URL="https://your-instance.service-now.com/"
@@ -102,7 +154,7 @@ export SERVICENOW_OBO_SCOPE="api://<downstream-app-id>/.default"
 python -m mcp_server_servicenow.cli
 ```
 
-On Windows PowerShell:
+Windows PowerShell example:
 
 ```powershell
 $env:SERVICENOW_INSTANCE_URL="https://your-instance.service-now.com/"
@@ -113,7 +165,7 @@ $env:SERVICENOW_OBO_SCOPE="api://<downstream-app-id>/.default"
 python -m mcp_server_servicenow.cli
 ```
 
-Auth selection rules:
+#### Auth Selection Rules
 
 1. OBO and basic auth are both supported, but they are separate auth modes.
 2. If complete OBO settings are present, the CLI selects OBO.
@@ -147,7 +199,7 @@ Why this matters: `_start_mcp_explorer.bat` launches `python -m mcp_server_servi
 
 ### Configuration in Cline
 
-To use this MCP server with Cline, add the following to your MCP settings file:
+To use this MCP server with Cline, add args for the auth mode you actually intend to run. Example below shows the basic-auth variant only.
 
 ```json
 {
@@ -195,12 +247,31 @@ Update @form_validation.js, it's a client script called "FormValidation"
 
 ## Authentication Methods
 
-The server supports multiple authentication methods:
+The server supports multiple authentication methods, but they are not equally appropriate for every ServiceNow environment.
 
-1. **Basic Authentication**: Username and password
-2. **Token Authentication**: OAuth token
-3. **OAuth Authentication**: Client ID, Client Secret, Username, and Password
-4. **Entra OBO Authentication**: Exchange incoming user token for downstream API token
+1. **Basic Authentication**
+  - Uses `--username` and `--password`.
+  - Best treated as compatibility-only because many ServiceNow tenants disable or discourage it.
+2. **Bearer Token Authentication**
+  - Uses `--token`.
+  - Useful when you already have a valid ServiceNow access token outside this process.
+3. **ServiceNow OAuth Authentication**
+  - Uses `--client-id`, `--client-secret`, `--username`, and `--password`.
+  - This is the direct OAuth path where ServiceNow is the resource server.
+4. **Entra OBO Authentication**
+  - Uses `--obo-*` settings.
+  - This is the delegated Entra identity path and is architecturally different from native ServiceNow OAuth.
+
+### Recommended Auth Mode By Scenario
+
+1. **You need the simplest local compatibility setup and your tenant still permits it**
+  - Use Basic Authentication.
+2. **You already have a valid ServiceNow bearer token**
+  - Use Bearer Token Authentication.
+3. **You want direct modern auth to ServiceNow**
+  - Use ServiceNow OAuth Authentication.
+4. **You need delegated per-user identity from Entra or an upstream enterprise caller**
+  - Use Entra OBO Authentication.
 
 ### Entra OBO Setup
 

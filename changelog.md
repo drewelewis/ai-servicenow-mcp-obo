@@ -4,6 +4,7 @@
 - Added a top-level OBO architecture diagram and layered component overview to explain the identity plane, MCP runtime plane, and ServiceNow-facing integration path: [README.md](README.md).
 
 ### Changed
+- Reworked the authentication documentation so each supported auth mode now has its own usage section and scenario guidance: [README.md](README.md).
 - Clarified the usage section to separate basic-auth examples from Entra OBO examples and document CLI auth-selection precedence: [README.md](README.md).
 - Corrected the installation section to document this repository as source-only and to use the current fork URL instead of inherited upstream/PyPI guidance: [README.md](README.md).
 - Added architecture guidance for the OBO path, including major components, design boundaries, and authentication alternatives: [README.md](README.md).
