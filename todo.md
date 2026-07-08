@@ -66,11 +66,15 @@ This file tracks planned and in-progress work for general repository development
 
 - [ ] Verify obo_guide.md requirements against current implementation and capture all missing gaps as actionable tasks.
 - [ ] Run manual regression testing for OBO auth hardening and architecture/documentation updates.
-- [ ] Validate ServiceNow JWT bearer delegated auth end-to-end against the target instance and update README with verified setup/usage guidance.
 - [ ] Decide whether to deprecate or remove the legacy direct OBO path after ServiceNow JWT bearer flow is proven in your tenant.
 
 ## Done
 
+- [x] Added a repeatable ServiceNow JWT delegated-flow smoke test script and documented one-command usage for ongoing validation. (2026-07-08)
+- [x] Added full OBO flow options documentation with architecture breakdown, Mermaid diagrams, and comparative analysis for direct OBO versus ServiceNow JWT bearer bridge patterns. (2026-07-08)
+- [x] Updated README with validated ServiceNow JWT bearer runbook details and references to the new OBO options architecture document. (2026-07-08)
+- [x] Validated ServiceNow JWT bearer delegated auth end-to-end (token exchange 200 + incident table API 200) after aligning ServiceNow JWT client selection, assertion audience semantics, and ServiceNow user mapping. (2026-07-08)
+- [x] Fixed ServiceNow JWT env automation so generated client-secret and additional `SERVICENOW_SN_JWT_*` settings are included in env merge operations. (2026-07-08)
 - [x] Updated ignore rules so the public JWKS document can be committed while private key material and generated payload files remain excluded. (2026-07-08)
 - [x] Added JWKS generation and ServiceNow OAuth/JWT payload template generation to the bootstrap helper so key material can flow directly into oauth_jwt, oauth_entity, and oauth_entity_profile provisioning. (2026-07-08)
 - [x] Fixed Azure bootstrap Graph PATCH body handling and made delegated scope configuration idempotent so reruns no longer fail on malformed JSON or enabled-scope replacement. (2026-07-08)

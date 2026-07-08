@@ -4,6 +4,8 @@
 - Added a new ServiceNow delegated-user authentication mode that validates incoming Entra bearer tokens and performs ServiceNow OAuth JWT bearer exchange using signed assertions: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).
 - Added a new ServiceNow JWT bootstrap helper that can discover OAuth-related tables, generate key material, upsert or validate registry records, and emit the remaining `SERVICENOW_SN_JWT_*` env values: [scripts/bootstrap_servicenow_jwt.py](scripts/bootstrap_servicenow_jwt.py).
 - Added JWKS generation and ServiceNow payload-template generation to the bootstrap helper so oauth_jwt, oauth_entity, and oauth_entity_profile provisioning files can be produced from local key material: [scripts/bootstrap_servicenow_jwt.py](scripts/bootstrap_servicenow_jwt.py).
+- Added a full OBO flow architecture document with side-by-side pattern breakdown, troubleshooting guidance, and Mermaid diagrams for direct OBO versus ServiceNow JWT bearer bridge approaches: [obo-flow-options.md](obo-flow-options.md).
+- Added a repeatable delegated JWT bearer smoke-test script that performs device-code sign-in, ServiceNow token exchange, and incident query verification in one run: [scripts/smoke_test_sn_jwt.py](scripts/smoke_test_sn_jwt.py).
 
 ### Changed
 - Expanded CLI authentication selection and environment-driven flags to support ServiceNow JWT bearer delegated auth alongside existing OBO/token/OAuth/basic modes: [mcp_server_servicenow/cli.py](mcp_server_servicenow/cli.py).
@@ -11,11 +13,16 @@
 - Documented full ServiceNow JWT bearer delegated auth environment configuration, including key material, issuer/audience checks, and local static-assertion fallback controls: [.env.example](.env.example).
 - Extended Azure bootstrap output and env-merge automation to carry the new JWT delegated-auth Azure values into local env configuration: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [scripts/apply-obo-env.ps1](scripts/apply-obo-env.ps1).
 - Updated ignore rules so [.servicenow-jwt/jwks.json](.servicenow-jwt/jwks.json) can be committed as public key material while private PEM files and generated payload templates remain ignored: [.gitignore](.gitignore).
+- Updated ServiceNow JWT assertion construction to use the ServiceNow JWT client identifier as the assertion audience, matching the validated token endpoint semantics for this tenant: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).
+- Expanded env-merge key coverage to include additional ServiceNow JWT bearer settings (`SERVICENOW_SN_JWT_CLIENT_SECRET`, token endpoint, scope, kid, expected issuer/audience, TTL/cache tuning, and static assertion toggles): [scripts/apply-obo-env.ps1](scripts/apply-obo-env.ps1).
+- Updated README with validated ServiceNow JWT bearer tenant runbook details, new smoke-test usage, and reference to complete OBO pattern comparison documentation: [README.md](README.md).
 
 ### Fixed
 - Unified request-scoped bearer-token extraction/binding for both Entra OBO and ServiceNow JWT bearer delegated auth paths so incoming identity context is consistently required for delegated calls: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).
 - Fixed the env merge helper so dry-run mode no longer creates backups and the conditional logic parses correctly in PowerShell: [scripts/apply-obo-env.ps1](scripts/apply-obo-env.ps1).
 - Fixed Azure bootstrap Graph PATCH body handling for PowerShell and made delegated scope configuration idempotent so rerunning the bootstrap no longer fails on enabled existing scopes: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1).
+- Fixed ServiceNow JWT bearer live-token failures by aligning runtime to the correct ServiceNow JWT client entity, rotating known client secret values, and provisioning a ServiceNow user record that matches the incoming Entra `preferred_username` claim used for delegated user resolution: [.env](.env).
+- Validated end-to-end delegated flow success after remediation (ServiceNow `/oauth_token.do` 200 and `/api/now/table/incident` 200) during live tenant test run.
 
 ## 2026-07-07
 

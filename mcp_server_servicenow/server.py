@@ -635,7 +635,7 @@ class ServiceNowJWTBearerUserAuth(Authentication):
         payload = {
             "iss": self.jwt_client_id,
             "sub": subject,
-            "aud": self.token_endpoint,
+            "aud": self.jwt_client_id,
             "iat": now,
             "exp": now + int(self.assertion_ttl_seconds),
             "jti": str(uuid.uuid4()),

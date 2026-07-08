@@ -196,6 +196,32 @@ For local OBO testing, if `SERVICENOW_OBO_USER_ASSERTION` is unset/placeholder, 
 
 This simulates the incoming user bearer token a Teams-like client would normally pass to the MCP server.
 
+### Repeatable ServiceNow JWT Smoke Test
+
+Use the dedicated smoke test script to validate the complete delegated JWT bearer path end-to-end with one command.
+
+Script path:
+
+- `scripts/smoke_test_sn_jwt.py`
+
+Run:
+
+```bash
+python scripts/smoke_test_sn_jwt.py --show-claims
+```
+
+What it verifies:
+
+1. Device-code sign-in and Entra user token acquisition.
+2. ServiceNow oauth_token.do JWT bearer exchange.
+3. ServiceNow incident table query through MCP server auth path.
+
+### OBO Flow Options and Architecture Breakdown
+
+For a complete breakdown of both delegated auth patterns, tradeoffs, and architecture diagrams, see:
+
+- [obo-flow-options.md](obo-flow-options.md)
+
 ### MCP Explorer (Inspector) Quick Start
 
 If you are using this repository scripts on Windows:
@@ -599,7 +625,31 @@ Behavior:
   - `SERVICENOW_OBO_USER_SCOPE`
   - `SERVICENOW_OBO_TOKEN_ENDPOINT`
   - `SERVICENOW_OBO_USER_ASSERTION`
+  - `SERVICENOW_SN_JWT_TENANT_ID`
+  - `SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID`
+  - `SERVICENOW_SN_JWT_CLIENT_ID`
+  - `SERVICENOW_SN_JWT_CLIENT_SECRET`
+  - `SERVICENOW_SN_JWT_PRIVATE_KEY_PATH`
+  - `SERVICENOW_SN_JWT_TOKEN_ENDPOINT`
+  - `SERVICENOW_SN_JWT_USER_CLAIM_SOURCE`
+  - `SERVICENOW_SN_JWT_SCOPE`
+  - `SERVICENOW_SN_JWT_KID`
+  - `SERVICENOW_SN_JWT_EXPECTED_AUDIENCE`
+  - `SERVICENOW_SN_JWT_EXPECTED_ISSUER`
+  - `SERVICENOW_SN_JWT_ASSERTION_TTL`
+  - `SERVICENOW_SN_JWT_CACHE_SAFETY_BUFFER`
+  - `SERVICENOW_SN_JWT_USER_ASSERTION`
+  - `SERVICENOW_SN_JWT_ALLOW_STATIC_ASSERTION`
 3. Creates timestamped backup file by default: `.env.bak-YYYYMMDD-HHMMSS`.
+
+### Validated ServiceNow JWT Bearer Notes (This Tenant)
+
+The following behaviors were validated during live end-to-end testing:
+
+1. ServiceNow JWT bearer exchange and incident API calls succeed after mapping incoming Entra identity to an existing ServiceNow user.
+2. ServiceNow token endpoint diagnostics are often generic; use ServiceNow syslog (`com.glide.ui.ServletErrorListener`) for root-cause errors.
+3. The working ServiceNow JWT client wiring in this tenant used the ServiceNow OAuth client record that the JWT provider resolves at token exchange time.
+4. A `User not found` invalid_grant from oauth_token.do was resolved by creating a matching `sys_user` for the incoming `preferred_username` claim.
 
 Important runtime note:
 
