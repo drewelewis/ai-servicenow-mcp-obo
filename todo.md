@@ -66,9 +66,28 @@ This file tracks planned and in-progress work for general repository development
 
 - [ ] Verify obo_guide.md requirements against current implementation and capture all missing gaps as actionable tasks.
 - [ ] Run manual regression testing for OBO auth hardening and architecture/documentation updates.
+- [ ] Validate ServiceNow JWT bearer delegated auth end-to-end against the target instance and update README with verified setup/usage guidance.
+- [ ] Decide whether to deprecate or remove the legacy direct OBO path after ServiceNow JWT bearer flow is proven in your tenant.
 
 ## Done
 
+- [x] Extended Azure bootstrap output and env-merge automation to emit/carry ServiceNow JWT delegated-auth Azure values, and added a ServiceNow bootstrap helper for table discovery, key generation, registry upsert/validation, and env emission. (2026-07-08)
+- [x] Implemented ServiceNow OAuth JWT bearer delegated-user auth mode (incoming Entra token validation + signed JWT assertion exchange + user-scoped token cache) and wired CLI/interactive helper/env template configuration for local and MCP runtime use. (2026-07-08)
+- [x] Removed unintended broker delegated permission/grant to the SAML-based ServiceNow enterprise app (`65f131b1-2cf1-42b9-b700-ee1485da296b`) to restore intended OBO app-permission scope. (2026-07-07)
+- [x] Reverted local OBO scope to OAuth-capable app resource after confirming tenant `ServiceNow` app is SAML-only (AADSTS399274), and documented required non-SAML OBO audience guidance for end-to-end delegated access. (2026-07-07)
+- [x] Granted broker app delegated `user_impersonation` permission to the tenant ServiceNow resource app and switched `SERVICENOW_OBO_SCOPE` to ServiceNow audience (`https://dev397814.service-now.com/.default`) for direct API OBO token acceptance. (2026-07-07)
+- [x] Corrected local ServiceNow instance URL in `.env` from `/login.do` page URL to root instance URL so API requests resolve to `/api/now/...` and do not redirect to session timeout. (2026-07-07)
+- [x] Fixed Entra interactive sign-in failure AADSTS500113 by configuring localhost public-client redirect URI on the interactive app registration and updating bootstrap automation to set it by default. (2026-07-07)
+- [x] Added missing local interactive OBO settings (`SERVICENOW_OBO_PUBLIC_CLIENT_ID`, `SERVICENOW_OBO_USER_SCOPE`) to `.env` so `_start_obo.bat` acquires a broker-audience user token instead of self-resource requests. (2026-07-07)
+- [x] Added root launcher script `_start_mcp_server.bat` to start the MCP server with `python -m mcp_server_servicenow.cli`. (2026-07-07)
+- [x] Extended OBO bootstrap automation to provision an interactive public-client app, expose broker delegated scope, grant interactive-to-broker delegated permission, and emit `SERVICENOW_OBO_PUBLIC_CLIENT_ID` plus `SERVICENOW_OBO_USER_SCOPE` for local MFA assertion acquisition. (2026-07-07)
+- [x] Fixed interactive OBO assertion acquisition default scope to GUID-based format (`<client-id>/.default`) and added targeted AADSTS90009 troubleshooting hint for Entra self-token errors. (2026-07-07)
+- [x] Added root launcher script `_start_obo.bat` to run the interactive OBO helper from repository root without path typing. (2026-07-07)
+- [x] Removed the obsolete `# OBO auth credentials` heading from local `.env` to keep auth comments aligned with current OBO flow expectations. (2026-07-07)
+- [x] Added local-test OBO user-token auto acquisition in the interactive helper using interactive Entra sign-in (browser popup with MFA, with optional device-code fallback) when a runtime assertion is not provided, simulating Teams-like inbound bearer behavior. (2026-07-07)
+- [x] Updated interactive helper env parsing to accept `SERVICENOW_OBO_USERNAME`/`SERVICENOW_OBO_PASSWORD` as fallback defaults for OAuth username/password resolution to avoid manual prompting/renaming in local OBO test env files. (2026-07-07)
+- [x] Updated interactive Python helper script to remove basic-auth login and use .env/args-based non-basic auth modes (OBO, token, OAuth), and documented usage in README. (2026-07-07)
+- [x] Added explicit CLI startup status messaging so stdio server startup is visible as waiting-for-client instead of appearing frozen. (2026-07-07)
 - [x] Added explicit ServiceNow OAuth and bearer-token variable guidance comments in local .env auth configuration. (2026-07-07)
 - [x] Added inline authentication-setting comments to local .env so each auth variable purpose is explicit. (2026-07-07)
 - [x] Restructured README so each authentication mode has its own usage section and clearer decision guidance. (2026-07-07)

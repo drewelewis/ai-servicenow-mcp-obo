@@ -2,7 +2,7 @@
 param(
     [string]$SourceEnvFile = ".env.obo.generated",
     [string]$TargetEnvFile = ".env",
-    [switch]$CreateBackup = $true,
+    [bool]$CreateBackup = $true,
     [switch]$WhatIfOnly
 )
 
@@ -51,8 +51,14 @@ $keysToApply = @(
     "SERVICENOW_OBO_CLIENT_ID",
     "SERVICENOW_OBO_CLIENT_SECRET",
     "SERVICENOW_OBO_SCOPE",
+    "SERVICENOW_OBO_PUBLIC_CLIENT_ID",
+    "SERVICENOW_OBO_USER_SCOPE",
     "SERVICENOW_OBO_TOKEN_ENDPOINT",
-    "SERVICENOW_OBO_USER_ASSERTION"
+    "SERVICENOW_OBO_USER_ASSERTION",
+    "SERVICENOW_SN_JWT_TENANT_ID",
+    "SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID",
+    "SERVICENOW_SN_JWT_CLIENT_ID",
+    "SERVICENOW_SN_JWT_PRIVATE_KEY_PATH"
 )
 
 $applied = New-Object System.Collections.Generic.List[string]
@@ -64,14 +70,7 @@ foreach ($key in $keysToApply) {
 }
 
 if ($applied.Count -eq 0) {
-    throw "No SERVICENOW_OBO_* keys found in source env file: $SourceEnvFile"
-}
-
-if (Test-Path -Path $TargetEnvFile -and $CreateBackup) {
-    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $backupPath = "$TargetEnvFile.bak-$timestamp"
-    Copy-Item -Path $TargetEnvFile -Destination $backupPath -Force
-    Write-Host "Backup created: $backupPath"
+    throw "No recognized SERVICENOW_OBO_* or SERVICENOW_SN_JWT_* keys found in source env file: $SourceEnvFile"
 }
 
 $newContent = @()
@@ -88,8 +87,15 @@ if ($WhatIfOnly) {
     return
 }
 
+if ((Test-Path -Path $TargetEnvFile) -and $CreateBackup) {
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $backupPath = "$TargetEnvFile.bak-$timestamp"
+    Copy-Item -Path $TargetEnvFile -Destination $backupPath -Force
+    Write-Host "Backup created: $backupPath"
+}
+
 Set-Content -Path $TargetEnvFile -Value $newContent -Encoding UTF8
 
-Write-Host "Applied OBO settings to: $TargetEnvFile"
+Write-Host "Applied generated auth settings to: $TargetEnvFile"
 Write-Host "Keys applied:"
 $applied | ForEach-Object { Write-Host " - $_" }

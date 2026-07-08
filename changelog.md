@@ -1,9 +1,44 @@
+## 2026-07-08
+
+### Added
+- Added a new ServiceNow delegated-user authentication mode that validates incoming Entra bearer tokens and performs ServiceNow OAuth JWT bearer exchange using signed assertions: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).
+- Added a new ServiceNow JWT bootstrap helper that can discover OAuth-related tables, generate key material, upsert or validate registry records, and emit the remaining `SERVICENOW_SN_JWT_*` env values: [scripts/bootstrap_servicenow_jwt.py](scripts/bootstrap_servicenow_jwt.py).
+
+### Changed
+- Expanded CLI authentication selection and environment-driven flags to support ServiceNow JWT bearer delegated auth alongside existing OBO/token/OAuth/basic modes: [mcp_server_servicenow/cli.py](mcp_server_servicenow/cli.py).
+- Expanded the interactive helper auth parser and mode selection to run the ServiceNow JWT bearer delegated flow for local validation: [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py).
+- Documented full ServiceNow JWT bearer delegated auth environment configuration, including key material, issuer/audience checks, and local static-assertion fallback controls: [.env.example](.env.example).
+- Extended Azure bootstrap output and env-merge automation to carry the new JWT delegated-auth Azure values into local env configuration: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [scripts/apply-obo-env.ps1](scripts/apply-obo-env.ps1).
+
+### Fixed
+- Unified request-scoped bearer-token extraction/binding for both Entra OBO and ServiceNow JWT bearer delegated auth paths so incoming identity context is consistently required for delegated calls: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).
+- Fixed the env merge helper so dry-run mode no longer creates backups and the conditional logic parses correctly in PowerShell: [scripts/apply-obo-env.ps1](scripts/apply-obo-env.ps1).
+
 ## 2026-07-07
 
 ### Added
+- Added a root server launcher script to start the MCP server directly via Python module entrypoint: [_start_mcp_server.bat](_start_mcp_server.bat).
 - Added a top-level OBO architecture diagram and layered component overview to explain the identity plane, MCP runtime plane, and ServiceNow-facing integration path: [README.md](README.md).
+- Added an interactive Python helper for menu-driven ServiceNow MCP operations for local validation workflows: [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py).
+- Added a root helper launcher to start the interactive OBO client from repository root with optional passthrough args: [_start_obo.bat](_start_obo.bat).
 
 ### Changed
+- Removed the unintended broker delegated permission and OAuth2 permission grant that targeted the SAML-based ServiceNow enterprise app (`65f131b1-2cf1-42b9-b700-ee1485da296b`) to restore intended OBO permission boundaries.
+- Reverted local OBO scope from ServiceNow SAML-only audience to OAuth-capable app audience after validating AADSTS399274 (`SAML SSO app cannot be used for non-SAML token issuance`): [.env](.env).
+- Added troubleshooting guidance for AADSTS399274 and clarified that OBO downstream scopes must target OAuth/OIDC-capable resource apps, not SAML-only enterprise apps: [README.md](README.md).
+- Updated OBO downstream audience configuration to target the tenant ServiceNow resource app (`https://dev397814.service-now.com/.default`) and aligned broker delegated permission grant to ServiceNow `user_impersonation` for direct ServiceNow API token acceptance: [.env](.env).
+- Corrected local ServiceNow base URL configuration from a page URL (`/login.do`) to the instance root URL so API calls no longer target `.../login.do/api/...` and trigger login redirects: [.env](.env).
+- Updated Entra OBO bootstrap automation so the interactive client app is configured with localhost public-client redirect URI (`http://localhost`) alongside public-client fallback, preventing AADSTS500113 during local interactive assertion acquisition: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1).
+- Added missing local interactive OBO env keys so helper sign-in uses the interactive client ID and broker `user_impersonation` scope, resolving broker self-resource sign-in failures in `_start_obo.bat`: [.env](.env).
+- Removed the obsolete `# OBO auth credentials` heading from local environment configuration to keep auth comments consistent with current flow documentation: [.env](.env).
+- Added local OBO test-mode behavior in the interactive helper to auto-acquire an Entra user assertion token (when `SERVICENOW_OBO_USER_ASSERTION` is unset/placeholder) using interactive Entra sign-in (browser popup with MFA, plus optional device-code fallback), then apply it as static assertion input for downstream OBO exchange: [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py), [README.md](README.md), [.env.example](.env.example).
+- Updated interactive OBO user-assertion scope defaults/documentation to use GUID-based resource notation (`<client-id>/.default`) to avoid Entra self-token scope failures like AADSTS90009: [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py), [README.md](README.md), [.env.example](.env.example).
+- Extended Entra OBO bootstrap automation to provision and configure an interactive public-client app, expose broker API delegated scope, and grant interactive-to-broker delegated permission so local MFA assertion acquisition aligns with OBO expectations: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [README.md](README.md).
+- Updated generated/merge env-key handling so bootstrap output and apply helper include `SERVICENOW_OBO_PUBLIC_CLIENT_ID` and `SERVICENOW_OBO_USER_SCOPE`: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [scripts/apply-obo-env.ps1](scripts/apply-obo-env.ps1), [README.md](README.md).
+- Added compatibility fallback in the interactive helper so `SERVICENOW_OBO_USERNAME` and `SERVICENOW_OBO_PASSWORD` are accepted as defaults for OAuth username/password resolution when `SERVICENOW_USERNAME` and `SERVICENOW_PASSWORD` are not set: [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py).
+- Removed basic-auth login flow from the interactive helper and aligned it to non-basic auth modes via `.env`/CLI args (OBO, bearer token, or ServiceNow OAuth): [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py), [README.md](README.md).
+- Added CLI startup status messages to stderr so running the MCP server manually makes the waiting-for-client state explicit for stdio and sse transports: [mcp_server_servicenow/cli.py](mcp_server_servicenow/cli.py).
+- Documented usage for the interactive MCP helper script in README, including list-commands mode: [README.md](README.md).
 - Added inline authentication-purpose comments in local environment configuration to clarify each auth-related setting and runtime assertion usage: [.env](.env).
 - Added explicit ServiceNow OAuth and bearer-token variable placeholders/comments in local environment configuration to clarify non-OBO auth setup paths: [.env](.env).
 - Reworked the authentication documentation so each supported auth mode now has its own usage section and scenario guidance: [README.md](README.md).
@@ -17,6 +52,8 @@
 ### Fixed
 - Added incoming Entra bearer token validation for issuer, audience, signature, and expiry on the OBO downstream request path: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py), [mcp_server_servicenow/cli.py](mcp_server_servicenow/cli.py).
 - Added request-scoped auth binding and user-scoped delegated token caching for OBO exchanges, with configurable expected audience and issuer controls: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py), [mcp_server_servicenow/cli.py](mcp_server_servicenow/cli.py), [.env.example](.env.example), [requirements.txt](requirements.txt), [pyproject.toml](pyproject.toml).
+- Added `msal` as a runtime dependency so interactive Entra MFA sign-in works for local OBO assertion acquisition in the helper script: [requirements.txt](requirements.txt), [pyproject.toml](pyproject.toml).
+- Added explicit troubleshooting guidance in the interactive helper error path when Entra returns AADSTS90009 during user-assertion acquisition: [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py).
 - Updated Mermaid syntax in the Entra registration relationship diagram to improve GitHub renderer compatibility (removed multiline node syntax and normalized edge labels): [README.md](README.md).
 
 ## 2026-07-06

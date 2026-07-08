@@ -172,6 +172,30 @@ python -m mcp_server_servicenow.cli
 3. If OBO is not configured, the CLI can fall back to token auth, OAuth, or basic username/password.
 4. Do not assume `--username` and `--password` are combined with OBO; they are used for the non-OBO auth paths.
 
+### Interactive CLI Helper
+
+If you want a quick local script that runs a menu of common MCP operations using your configured `.env` auth settings, use:
+
+```bash
+python scripts/interactive_mcp_client.py
+```
+
+To print the supported command list without starting interactive mode:
+
+```bash
+python scripts/interactive_mcp_client.py --list-commands
+```
+
+This helper supports the same non-basic auth configuration patterns as the CLI (OBO, bearer token, or ServiceNow OAuth).
+
+For local OBO testing, if `SERVICENOW_OBO_USER_ASSERTION` is unset/placeholder, the helper can auto-acquire a user assertion token via interactive Entra sign-in (browser popup with MFA).
+
+- optional `SERVICENOW_OBO_PUBLIC_CLIENT_ID` (defaults to `SERVICENOW_OBO_CLIENT_ID`)
+- optional `SERVICENOW_OBO_USER_SCOPE` (defaults to `<SERVICENOW_OBO_CLIENT_ID>/.default` GUID-based scope)
+- optional `SERVICENOW_OBO_ALLOW_DEVICE_CODE_FALLBACK=true` to allow device-code flow when popup sign-in is unavailable
+
+This simulates the incoming user bearer token a Teams-like client would normally pass to the MCP server.
+
 ### MCP Explorer (Inspector) Quick Start
 
 If you are using this repository scripts on Windows:
@@ -230,6 +254,11 @@ To use this MCP server with Cline, add args for the auth mode you actually inten
   - Provide one supported auth method in `.env` (basic auth, token, or OAuth values).
 - `npx was not found`
   - Install Node.js so `npx` is available in `PATH`.
+
+- `AADSTS399274: application is configured for SAML SSO and could not be used with non-SAML protocol`
+  - The OBO downstream resource in `SERVICENOW_OBO_SCOPE` points to a SAML-only enterprise app.
+  - Use an OAuth/OIDC-capable resource app scope (for example `api://<app-id>/.default`) for OBO token exchange.
+  - If you need direct ServiceNow API acceptance, configure ServiceNow to trust Entra-issued OAuth/OIDC bearer tokens for the chosen audience; SAML-only app registrations cannot be used for OBO token issuance.
 
 ## Tool Usage Examples
 
@@ -484,13 +513,16 @@ Script path:
 What the script does:
 
 1. Creates or reuses a broker app registration (the MCP server confidential client).
-2. Creates or reuses a downstream API app registration.
-3. Creates service principals for both apps.
-4. Configures an exposed delegated scope on the downstream API.
-5. Adds delegated permission from broker app to downstream API.
-6. Attempts tenant-wide admin consent.
-7. Creates/rotates a broker app client secret.
-8. Writes and prints a generated env block with all required `SERVICENOW_OBO_*` values.
+2. Creates or reuses an interactive public-client app registration (for local MFA popup sign-in).
+3. Creates or reuses a downstream API app registration.
+4. Creates service principals for all three apps.
+5. Configures an exposed delegated scope on the broker API.
+6. Configures an exposed delegated scope on the downstream API.
+7. Adds delegated permission from broker app to downstream API.
+8. Adds delegated permission from interactive client app to broker API.
+9. Attempts tenant-wide admin consent.
+10. Creates/rotates a broker app client secret.
+11. Writes and prints a generated env block with all required `SERVICENOW_OBO_*` values.
 
 Prerequisites:
 
@@ -514,6 +546,8 @@ az login
 .\scripts\bootstrap-entra-obo.ps1 `
   -TenantId "<tenant-guid>" `
   -BrokerAppName "servicenow-mcp-obo-broker" `
+  -InteractiveClientAppName "servicenow-mcp-obo-interactive-client" `
+  -BrokerScopeName "user_impersonation" `
   -DownstreamApiAppName "servicenow-mcp-obo-downstream-api" `
   -DownstreamScopeName "user_impersonation" `
   -SecretYears 1 `
@@ -528,6 +562,8 @@ Expected output artifacts:
    - `SERVICENOW_OBO_CLIENT_ID`
    - `SERVICENOW_OBO_CLIENT_SECRET`
    - `SERVICENOW_OBO_SCOPE`
+  - `SERVICENOW_OBO_PUBLIC_CLIENT_ID`
+  - `SERVICENOW_OBO_USER_SCOPE`
    - `SERVICENOW_OBO_TOKEN_ENDPOINT`
    - `SERVICENOW_OBO_USER_ASSERTION` placeholder
 
@@ -559,6 +595,8 @@ Behavior:
   - `SERVICENOW_OBO_CLIENT_ID`
   - `SERVICENOW_OBO_CLIENT_SECRET`
   - `SERVICENOW_OBO_SCOPE`
+  - `SERVICENOW_OBO_PUBLIC_CLIENT_ID`
+  - `SERVICENOW_OBO_USER_SCOPE`
   - `SERVICENOW_OBO_TOKEN_ENDPOINT`
   - `SERVICENOW_OBO_USER_ASSERTION`
 3. Creates timestamped backup file by default: `.env.bak-YYYYMMDD-HHMMSS`.
@@ -575,6 +613,8 @@ SERVICENOW_OBO_TENANT_ID="<tenant-id-guid>"
 SERVICENOW_OBO_CLIENT_ID="<app-client-id>"
 SERVICENOW_OBO_CLIENT_SECRET="<app-client-secret>"
 SERVICENOW_OBO_SCOPE="api://<downstream-app-id>/.default"
+SERVICENOW_OBO_PUBLIC_CLIENT_ID="<interactive-public-client-app-id>"
+SERVICENOW_OBO_USER_SCOPE="api://<broker-app-id>/user_impersonation"
 # Optional override
 # SERVICENOW_OBO_TOKEN_ENDPOINT="https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token"
 # Optional local-only fallback if request transport cannot provide assertion

@@ -11,6 +11,7 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 import hashlib
 import contextvars
 from urllib.parse import urlparse
@@ -503,6 +504,238 @@ class EntraOBOAuth(Authentication):
             if cache_key:
                 self._token_cache[cache_key] = (access_token, expiry)
 
+
+class ServiceNowJWTBearerUserAuth(Authentication):
+    """ServiceNow OAuth JWT bearer grant auth using validated delegated user context."""
+
+    def __init__(
+        self,
+        tenant_id: str,
+        upstream_client_id: str,
+        jwt_client_id: str,
+        jwt_private_key: Optional[str],
+        jwt_private_key_path: Optional[str],
+        token_endpoint: str,
+        user_claim_source: str = "preferred_username",
+        jwt_client_secret: Optional[str] = None,
+        jwt_scope: Optional[str] = None,
+        jwt_kid: Optional[str] = None,
+        jwt_private_key_passphrase: Optional[str] = None,
+        user_assertion: Optional[str] = None,
+        allow_static_assertion: bool = False,
+        expected_audiences: Optional[List[str]] = None,
+        expected_issuers: Optional[List[str]] = None,
+        assertion_ttl_seconds: int = 300,
+        cache_safety_buffer_seconds: int = 60,
+        token: Optional[str] = None,
+        token_expiry: Optional[float] = None,
+    ):
+        self.tenant_id = tenant_id
+        self.upstream_client_id = upstream_client_id
+        self.jwt_client_id = jwt_client_id
+        self.jwt_client_secret = jwt_client_secret
+        self.jwt_scope = jwt_scope
+        self.jwt_kid = jwt_kid
+        self.jwt_private_key_passphrase = jwt_private_key_passphrase
+        self.user_assertion = user_assertion
+        self.allow_static_assertion = allow_static_assertion
+        self.token_endpoint = token_endpoint
+        self.user_claim_source = user_claim_source
+        self.assertion_ttl_seconds = assertion_ttl_seconds
+        self.cache_safety_buffer_seconds = cache_safety_buffer_seconds
+        self.token = token
+        self.token_expiry = token_expiry
+        self._token_cache: Dict[str, Tuple[str, float]] = {}
+
+        if not jwt_private_key and not jwt_private_key_path:
+            raise ValueError("ServiceNow JWT bearer auth requires a private key value or path")
+
+        self._private_key = jwt_private_key
+        if jwt_private_key_path:
+            with open(jwt_private_key_path, "r", encoding="utf-8") as handle:
+                self._private_key = handle.read()
+
+        if not self._private_key:
+            raise ValueError("ServiceNow JWT bearer private key is empty")
+
+        self._validator = EntraTokenValidator(
+            tenant_id=tenant_id,
+            expected_audiences=expected_audiences or [upstream_client_id],
+            expected_issuers=expected_issuers,
+        )
+
+    def validate_user_assertion(self, user_assertion: str) -> Dict[str, Any]:
+        """Validate incoming delegated user token before ServiceNow JWT assertion creation."""
+        return self._validator.validate(user_assertion)
+
+    def bind_request_auth(self, user_assertion: Optional[str]) -> Tuple[Optional[contextvars.Token], Optional[contextvars.Token]]:
+        """Validate and bind request-scoped delegated identity for current request."""
+        assertion_value = user_assertion
+        claims = None
+
+        if assertion_value:
+            claims = self.validate_user_assertion(assertion_value)
+        elif self.allow_static_assertion and self.user_assertion:
+            assertion_value = self.user_assertion
+            claims = self.validate_user_assertion(assertion_value)
+        else:
+            raise IncomingTokenValidationError(
+                "Missing incoming user token for delegated ServiceNow JWT exchange. "
+                "Provide an Authorization bearer token on the MCP request."
+            )
+
+        assertion_token = _request_user_assertion_var.set(assertion_value)
+        auth_state_token = _request_auth_state_var.set(RequestAuthState(assertion_value, claims))
+        return assertion_token, auth_state_token
+
+    def reset_request_auth(
+        self,
+        assertion_token: Optional[contextvars.Token],
+        auth_state_token: Optional[contextvars.Token],
+    ) -> None:
+        """Clear request-scoped delegated identity state after request completion."""
+        if auth_state_token is not None:
+            _request_auth_state_var.reset(auth_state_token)
+        if assertion_token is not None:
+            _request_user_assertion_var.reset(assertion_token)
+
+    def _resolve_subject(self, claims: Dict[str, Any]) -> str:
+        """Resolve ServiceNow JWT subject value from configured claim source."""
+        preferred = str(claims.get(self.user_claim_source) or "").strip()
+        if preferred:
+            return preferred
+
+        for fallback in ("preferred_username", "email", "upn", "oid", "sub"):
+            value = str(claims.get(fallback) or "").strip()
+            if value:
+                return value
+
+        raise RuntimeError(
+            f"Incoming token missing configured user claim '{self.user_claim_source}' and all fallback claims"
+        )
+
+    def _build_cache_key(self, subject: str) -> str:
+        cache_material = f"{self.tenant_id}|{self.jwt_client_id}|{subject}|{self.jwt_scope or ''}|{self.token_endpoint}"
+        return hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
+
+    def _get_cached_token(self, cache_key: str) -> Optional[Tuple[str, float]]:
+        cached = self._token_cache.get(cache_key)
+        if not cached:
+            return None
+
+        token_value, expiry = cached
+        if time.time() >= (expiry - self.cache_safety_buffer_seconds):
+            self._token_cache.pop(cache_key, None)
+            return None
+
+        return token_value, expiry
+
+    def _build_signed_assertion(self, subject: str) -> str:
+        now = int(time.time())
+        payload = {
+            "iss": self.jwt_client_id,
+            "sub": subject,
+            "aud": self.token_endpoint,
+            "iat": now,
+            "exp": now + int(self.assertion_ttl_seconds),
+            "jti": str(uuid.uuid4()),
+        }
+        headers = {"typ": "JWT"}
+        if self.jwt_kid:
+            headers["kid"] = self.jwt_kid
+
+        private_key = self._private_key
+        if self.jwt_private_key_passphrase:
+            private_key = {
+                "key": self._private_key,
+                "passphrase": self.jwt_private_key_passphrase,
+            }
+
+        token = jwt.encode(payload, private_key, algorithm="RS256", headers=headers)
+        if isinstance(token, bytes):
+            return token.decode("utf-8")
+        return token
+
+    async def get_headers(self) -> Dict[str, str]:
+        """Return ServiceNow bearer token headers minted via JWT bearer grant."""
+        auth_state = _get_request_auth_state()
+        if auth_state is not None:
+            subject = self._resolve_subject(auth_state.claims)
+            cache_key = self._build_cache_key(subject)
+            cached = self._get_cached_token(cache_key)
+            if cached is not None:
+                token_value, expiry = cached
+                self.token = token_value
+                self.token_expiry = expiry
+                return {"Authorization": f"Bearer {token_value}"}
+
+            await self.refresh(auth_state=auth_state)
+            cached = self._get_cached_token(cache_key)
+            if cached is None:
+                raise RuntimeError("ServiceNow JWT bearer token acquisition failed to populate cache")
+
+            token_value, expiry = cached
+            self.token = token_value
+            self.token_expiry = expiry
+            return {"Authorization": f"Bearer {token_value}"}
+
+        if self.token is None or (
+            self.token_expiry and time.time() >= (self.token_expiry - self.cache_safety_buffer_seconds)
+        ):
+            await self.refresh()
+
+        return {"Authorization": f"Bearer {self.token}"}
+
+    def get_auth(self) -> None:
+        return None
+
+    async def refresh(self, auth_state: Optional[RequestAuthState] = None):
+        """Exchange JWT assertion for ServiceNow access token."""
+        active_auth_state = auth_state or _get_request_auth_state()
+        claims = active_auth_state.claims if active_auth_state else None
+
+        if claims is None and self.allow_static_assertion and self.user_assertion:
+            claims = self.validate_user_assertion(self.user_assertion)
+
+        if claims is None:
+            raise RuntimeError(
+                "Missing validated user context for ServiceNow JWT bearer exchange. "
+                "Provide request-bound bearer token, or enable static assertion fallback for local testing."
+            )
+
+        subject = self._resolve_subject(claims)
+        cache_key = self._build_cache_key(subject)
+        cached = self._get_cached_token(cache_key)
+        if cached is not None:
+            self.token, self.token_expiry = cached
+            return
+
+        assertion = self._build_signed_assertion(subject)
+        data: Dict[str, str] = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "client_id": self.jwt_client_id,
+            "assertion": assertion,
+        }
+        if self.jwt_client_secret:
+            data["client_secret"] = self.jwt_client_secret
+        if self.jwt_scope:
+            data["scope"] = self.jwt_scope
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(self.token_endpoint, data=data)
+            response.raise_for_status()
+            result = response.json()
+
+            access_token = result.get("access_token")
+            if not access_token:
+                raise RuntimeError("ServiceNow JWT bearer exchange succeeded but no access_token was returned")
+
+            expires_in = result.get("expires_in", 1800)
+            expiry = time.time() + float(expires_in)
+            self.token = access_token
+            self.token_expiry = expiry
+            self._token_cache[cache_key] = (access_token, expiry)
+
 class ServiceNowClient:
     """Client for interacting with ServiceNow API"""
     
@@ -562,7 +795,7 @@ class ServiceNowClient:
         assertion_token = None
         auth_state_token = None
 
-        if isinstance(self.auth, EntraOBOAuth):
+        if isinstance(self.auth, (EntraOBOAuth, ServiceNowJWTBearerUserAuth)):
             assertion = _extract_user_assertion_from_ctx(ctx)
             assertion_token, auth_state_token = self.auth.bind_request_auth(assertion)
 
@@ -602,7 +835,7 @@ class ServiceNowClient:
             logger.error(detail)
             raise RuntimeError(detail) from e
         finally:
-            if isinstance(self.auth, EntraOBOAuth):
+            if isinstance(self.auth, (EntraOBOAuth, ServiceNowJWTBearerUserAuth)):
                 self.auth.reset_request_auth(assertion_token, auth_state_token)
             
     async def get_record(self, table: str, sys_id: str, ctx: Optional[Context] = None) -> Dict[str, Any]:
@@ -1193,4 +1426,59 @@ def create_obo_auth(
         allow_static_assertion=allow_static_assertion,
         expected_audiences=parsed_audiences,
         expected_issuers=parsed_issuers,
+    )
+
+
+def create_servicenow_jwt_bearer_user_auth(
+    tenant_id: str,
+    upstream_client_id: str,
+    jwt_client_id: str,
+    token_endpoint: str,
+    instance_url: str,
+    jwt_private_key: Optional[str] = None,
+    jwt_private_key_path: Optional[str] = None,
+    jwt_private_key_passphrase: Optional[str] = None,
+    jwt_client_secret: Optional[str] = None,
+    jwt_scope: Optional[str] = None,
+    jwt_kid: Optional[str] = None,
+    user_claim_source: str = "preferred_username",
+    user_assertion: Optional[str] = None,
+    allow_static_assertion: bool = False,
+    expected_audiences: Optional[Union[str, List[str]]] = None,
+    expected_issuers: Optional[Union[str, List[str]]] = None,
+    assertion_ttl_seconds: int = 300,
+    cache_safety_buffer_seconds: int = 60,
+) -> ServiceNowJWTBearerUserAuth:
+    """Create ServiceNow JWT bearer auth object for delegated user API calls."""
+    parsed_audiences = (
+        _split_csv_values(expected_audiences)
+        if isinstance(expected_audiences, str)
+        else (expected_audiences or [upstream_client_id])
+    )
+    parsed_issuers = (
+        _split_csv_values(expected_issuers)
+        if isinstance(expected_issuers, str)
+        else expected_issuers
+    )
+
+    effective_endpoint = token_endpoint or f"{instance_url.rstrip('/')}/oauth_token.do"
+
+    return ServiceNowJWTBearerUserAuth(
+        tenant_id=tenant_id,
+        upstream_client_id=upstream_client_id,
+        jwt_client_id=jwt_client_id,
+        jwt_private_key=jwt_private_key,
+        jwt_private_key_path=jwt_private_key_path,
+        token_endpoint=effective_endpoint,
+        user_claim_source=user_claim_source,
+        jwt_client_secret=jwt_client_secret,
+        jwt_scope=jwt_scope,
+        jwt_kid=jwt_kid,
+        jwt_private_key_passphrase=jwt_private_key_passphrase,
+        user_assertion=user_assertion,
+        allow_static_assertion=allow_static_assertion,
+        expected_audiences=parsed_audiences,
+        expected_issuers=parsed_issuers,
+        assertion_ttl_seconds=assertion_ttl_seconds,
+        cache_safety_buffer_seconds=cache_safety_buffer_seconds,
     )

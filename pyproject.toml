@@ -33,6 +33,7 @@ dependencies = [
     "PyJWT[crypto]>=2.9.0",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
+    "msal>=1.30.0",
 ]
 
 [project.optional-dependencies]
