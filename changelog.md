@@ -3,12 +3,14 @@
 ### Added
 - Added a new ServiceNow delegated-user authentication mode that validates incoming Entra bearer tokens and performs ServiceNow OAuth JWT bearer exchange using signed assertions: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).
 - Added a new ServiceNow JWT bootstrap helper that can discover OAuth-related tables, generate key material, upsert or validate registry records, and emit the remaining `SERVICENOW_SN_JWT_*` env values: [scripts/bootstrap_servicenow_jwt.py](scripts/bootstrap_servicenow_jwt.py).
+- Added JWKS generation and ServiceNow payload-template generation to the bootstrap helper so oauth_jwt, oauth_entity, and oauth_entity_profile provisioning files can be produced from local key material: [scripts/bootstrap_servicenow_jwt.py](scripts/bootstrap_servicenow_jwt.py).
 
 ### Changed
 - Expanded CLI authentication selection and environment-driven flags to support ServiceNow JWT bearer delegated auth alongside existing OBO/token/OAuth/basic modes: [mcp_server_servicenow/cli.py](mcp_server_servicenow/cli.py).
 - Expanded the interactive helper auth parser and mode selection to run the ServiceNow JWT bearer delegated flow for local validation: [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py).
 - Documented full ServiceNow JWT bearer delegated auth environment configuration, including key material, issuer/audience checks, and local static-assertion fallback controls: [.env.example](.env.example).
 - Extended Azure bootstrap output and env-merge automation to carry the new JWT delegated-auth Azure values into local env configuration: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [scripts/apply-obo-env.ps1](scripts/apply-obo-env.ps1).
+- Updated ignore rules so [.servicenow-jwt/jwks.json](.servicenow-jwt/jwks.json) can be committed as public key material while private PEM files and generated payload templates remain ignored: [.gitignore](.gitignore).
 
 ### Fixed
 - Unified request-scoped bearer-token extraction/binding for both Entra OBO and ServiceNow JWT bearer delegated auth paths so incoming identity context is consistently required for delegated calls: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).

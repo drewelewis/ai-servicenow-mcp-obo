@@ -71,6 +71,8 @@ This file tracks planned and in-progress work for general repository development
 
 ## Done
 
+- [x] Updated ignore rules so the public JWKS document can be committed while private key material and generated payload files remain excluded. (2026-07-08)
+- [x] Added JWKS generation and ServiceNow OAuth/JWT payload template generation to the bootstrap helper so key material can flow directly into oauth_jwt, oauth_entity, and oauth_entity_profile provisioning. (2026-07-08)
 - [x] Fixed Azure bootstrap Graph PATCH body handling and made delegated scope configuration idempotent so reruns no longer fail on malformed JSON or enabled-scope replacement. (2026-07-08)
 - [x] Extended Azure bootstrap output and env-merge automation to emit/carry ServiceNow JWT delegated-auth Azure values, and added a ServiceNow bootstrap helper for table discovery, key generation, registry upsert/validation, and env emission. (2026-07-08)
 - [x] Implemented ServiceNow OAuth JWT bearer delegated-user auth mode (incoming Entra token validation + signed JWT assertion exchange + user-scoped token cache) and wired CLI/interactive helper/env template configuration for local and MCP runtime use. (2026-07-08)

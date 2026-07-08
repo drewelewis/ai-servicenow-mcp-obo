@@ -15,9 +15,11 @@ and required field names in your instance.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -26,6 +28,7 @@ import requests
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from cryptography.x509.oid import NameOID
 from dotenv import load_dotenv
 
@@ -58,6 +61,26 @@ def _read_json_file(path: str) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"JSON payload file must contain an object: {path}")
     return data
+
+
+def _b64url_uint(value: int) -> str:
+    raw = value.to_bytes((value.bit_length() + 7) // 8, byteorder="big")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _load_certificate(path: str) -> x509.Certificate:
+    return x509.load_pem_x509_certificate(Path(path).read_bytes())
+
+
+def _load_rsa_public_key(path: str) -> rsa.RSAPublicKey:
+    key = load_pem_public_key(Path(path).read_bytes())
+    if not isinstance(key, rsa.RSAPublicKey):
+        raise ValueError(f"Expected RSA public key in PEM file: {path}")
+    return key
+
+
+def _derive_default_kid(certificate: x509.Certificate) -> str:
+    return certificate.fingerprint(hashes.SHA1()).hex()
 
 
 class ServiceNowAdminClient:
@@ -220,6 +243,123 @@ def _generate_key_material(args: argparse.Namespace) -> int:
     return 0
 
 
+def _generate_jwks(args: argparse.Namespace) -> int:
+    certificate = _load_certificate(args.certificate_path)
+    public_key = _load_rsa_public_key(args.public_key_path)
+    numbers = public_key.public_numbers()
+
+    kid = args.kid or _derive_default_kid(certificate)
+    cert_der_b64 = base64.b64encode(certificate.public_bytes(serialization.Encoding.DER)).decode("ascii")
+    jwk = {
+        "kty": "RSA",
+        "use": "sig",
+        "alg": "RS256",
+        "kid": kid,
+        "n": _b64url_uint(numbers.n),
+        "e": _b64url_uint(numbers.e),
+        "x5c": [cert_der_b64],
+    }
+    jwks = {"keys": [jwk]}
+
+    output_path = Path(args.output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(jwks, indent=2) + "\n", encoding="utf-8")
+
+    result = {
+        "jwks_path": str(output_path),
+        "kid": kid,
+        "certificate_path": args.certificate_path,
+        "public_key_path": args.public_key_path,
+    }
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def _build_payload_templates(args: argparse.Namespace) -> int:
+    payload_dir = Path(args.output_dir)
+    payload_dir.mkdir(parents=True, exist_ok=True)
+
+    client_id = args.client_id or str(uuid.uuid4())
+    jwt_provider_name = args.jwt_provider_name or f"{args.entity_name} JWT Provider"
+    entity_name = args.entity_name
+    profile_name = args.profile_name or f"{entity_name} default_profile"
+    jwks_url = args.jwks_url
+    if not jwks_url:
+        raise ValueError("JWKS URL is required to build payload templates")
+
+    oauth_jwt_payload = {
+        "clock_skew": str(args.clock_skew),
+        "jwks_url": jwks_url,
+        "enable_jti_verification": str(args.enable_jti_verification).lower(),
+        "jti_claim": args.jti_claim,
+        "user_field": args.user_field,
+    }
+
+    oauth_entity_payload = {
+        "name": entity_name,
+        "type": "client",
+        "active": "true",
+        "client_id": client_id,
+        "token_format": args.token_format,
+        "inbound_grant_type": "jwt",
+        "default_grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "public_client": "false",
+        "scope_restriction_status": args.scope_restriction_status,
+        "client_type": args.client_type,
+        "sub_claim": args.sub_claim,
+        "comments": args.comments,
+        "jwt_provider": "__SET_OAUTH_JWT_SYS_ID__",
+    }
+
+    oauth_entity_profile_payload = {
+        "name": profile_name,
+        "oauth_entity": "__SET_OAUTH_ENTITY_SYS_ID__",
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "jwt_provider": "__SET_OAUTH_JWT_SYS_ID__",
+        "default": "true",
+    }
+
+    if args.scope_name:
+        oauth_entity_scope_payload = {
+            "name": args.scope_name,
+            "oauth_entity_scope": args.scope_value or args.scope_name,
+            "oauth_entity": "__SET_OAUTH_ENTITY_SYS_ID__",
+            "in_default_profile": "true",
+        }
+    else:
+        oauth_entity_scope_payload = None
+
+    files = {
+        "oauth_jwt": payload_dir / "oauth_jwt.payload.json",
+        "oauth_entity": payload_dir / "oauth_entity.payload.json",
+        "oauth_entity_profile": payload_dir / "oauth_entity_profile.payload.json",
+    }
+    files["oauth_jwt"].write_text(json.dumps(oauth_jwt_payload, indent=2) + "\n", encoding="utf-8")
+    files["oauth_entity"].write_text(json.dumps(oauth_entity_payload, indent=2) + "\n", encoding="utf-8")
+    files["oauth_entity_profile"].write_text(json.dumps(oauth_entity_profile_payload, indent=2) + "\n", encoding="utf-8")
+
+    if oauth_entity_scope_payload is not None:
+        files["oauth_entity_scope"] = payload_dir / "oauth_entity_scope.payload.json"
+        files["oauth_entity_scope"].write_text(json.dumps(oauth_entity_scope_payload, indent=2) + "\n", encoding="utf-8")
+
+    result = {
+        "client_id": client_id,
+        "jwt_provider_name": jwt_provider_name,
+        "entity_name": entity_name,
+        "profile_name": profile_name,
+        "jwks_url": jwks_url,
+        "payload_files": {key: str(path) for key, path in files.items()},
+        "notes": [
+            "Create oauth_jwt first and capture its sys_id.",
+            "Replace __SET_OAUTH_JWT_SYS_ID__ in oauth_entity and oauth_entity_profile payloads.",
+            "Create oauth_entity next and capture its sys_id.",
+            "Replace __SET_OAUTH_ENTITY_SYS_ID__ in oauth_entity_profile and oauth_entity_scope payloads before creation.",
+        ],
+    }
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def _upsert_registry(args: argparse.Namespace) -> int:
     client = ServiceNowAdminClient(
         instance_url=args.url,
@@ -342,6 +482,33 @@ def _build_parser() -> argparse.ArgumentParser:
     keygen.add_argument("--passphrase", default=os.environ.get("SERVICENOW_SN_JWT_PRIVATE_KEY_PASSPHRASE"), help="Optional private key passphrase")
     keygen.add_argument("--overwrite", action="store_true", help="Allow overwriting existing output files")
     keygen.set_defaults(func=_generate_key_material)
+
+    jwks = subparsers.add_parser("generate-jwks", help="Generate a JWKS JSON document from certificate/public key PEM files")
+    jwks.add_argument("--certificate-path", default=str(REPO_ROOT / ".servicenow-jwt" / "servicenow-jwt-certificate.pem"), help="Path to PEM certificate file")
+    jwks.add_argument("--public-key-path", default=str(REPO_ROOT / ".servicenow-jwt" / "servicenow-jwt-public.pem"), help="Path to PEM public key file")
+    jwks.add_argument("--kid", default=os.environ.get("SERVICENOW_SN_JWT_KID"), help="Optional explicit kid to place in the JWK")
+    jwks.add_argument("--output-file", default=str(REPO_ROOT / ".servicenow-jwt" / "jwks.json"), help="Output JWKS JSON path")
+    jwks.set_defaults(func=_generate_jwks)
+
+    payloads = subparsers.add_parser("build-payload-templates", help="Generate ServiceNow payload JSON templates for JWT bearer provisioning")
+    payloads.add_argument("--entity-name", default="ServiceNow MCP JWT Bearer", help="Name for the oauth_entity record")
+    payloads.add_argument("--jwt-provider-name", default="", help="Optional name for the JWT provider record notes")
+    payloads.add_argument("--profile-name", default="", help="Optional name for the oauth_entity_profile record")
+    payloads.add_argument("--jwks-url", required=True, help="JWKS URL that ServiceNow can fetch")
+    payloads.add_argument("--client-id", default="", help="Optional explicit ServiceNow OAuth client ID (defaults to a new UUID)")
+    payloads.add_argument("--user-field", default="email", help="ServiceNow user field used to resolve the JWT subject")
+    payloads.add_argument("--sub-claim", default="sys_id", help="ServiceNow oauth_entity subject claim setting")
+    payloads.add_argument("--jti-claim", default="jti", help="JWT claim name used for JTI verification")
+    payloads.add_argument("--clock-skew", type=int, default=60, help="Clock skew value for oauth_jwt")
+    payloads.add_argument("--enable-jti-verification", action="store_true", default=True, help="Enable JTI verification in oauth_jwt")
+    payloads.add_argument("--token-format", default="opaque", help="oauth_entity token_format choice value")
+    payloads.add_argument("--scope-restriction-status", default="useraccount", help="oauth_entity scope restriction choice value")
+    payloads.add_argument("--client-type", default="integration_as_a_user", help="oauth_entity client_type choice value")
+    payloads.add_argument("--comments", default="Provisioned for ServiceNow MCP delegated JWT bearer integration.", help="Comment text for oauth_entity")
+    payloads.add_argument("--scope-name", default="", help="Optional oauth_entity_scope display name to create")
+    payloads.add_argument("--scope-value", default="", help="Optional oauth_entity_scope value; defaults to scope name")
+    payloads.add_argument("--output-dir", default=str(REPO_ROOT / ".servicenow-jwt" / "payloads"), help="Directory to write payload JSON templates")
+    payloads.set_defaults(func=_build_payload_templates)
 
     upsert = subparsers.add_parser("upsert-registry", help="Create or update a ServiceNow registry/security record")
     _add_connection_args(upsert)
