@@ -48,6 +48,120 @@ Notes:
 2. Do not rely on a PyPI package for this repo's current feature set.
 3. On Windows, you can also use the provided helper scripts for local setup: `_env_create.bat`, `_env_activate.bat`, and `_install.bat`.
 
+## Getting Started
+
+This project requires identity and ServiceNow configuration beyond a simple clone-and-run flow.
+
+Use the runbook below for first-time setup.
+
+### Prerequisites
+
+1. Python 3.10+ available on PATH.
+2. ServiceNow instance admin access for OAuth/JWT object setup.
+3. Azure CLI (`az`) installed and authenticated if you plan to use Entra bootstrap automation.
+4. Ability to complete interactive Entra sign-in (browser popup or device code).
+
+### Step 1: Clone and Create Local Environment
+
+```bash
+git clone https://github.com/drewelewis/ai-servicenow-mcp-obo.git
+cd ai-servicenow-mcp-obo
+python -m venv .venv
+```
+
+Windows helper path:
+
+```bat
+_env_create.bat
+_env_activate.bat
+_install.bat
+```
+
+Cross-platform manual path:
+
+```bash
+pip install -e .
+```
+
+### Step 2: Choose Your Auth Pattern
+
+1. Basic/token/OAuth direct mode:
+  - Quickest path for legacy or static credentials.
+2. Entra OBO mode:
+  - For delegated user token exchange in Entra.
+3. ServiceNow JWT bearer bridge mode (recommended for delegated access in this tenant):
+  - Validates incoming Entra user token, then exchanges signed JWT assertion at ServiceNow oauth_token.do.
+
+For full architecture comparison and diagrams of OBO options, see [obo-flow-options.md](obo-flow-options.md).
+
+### Step 3: Bootstrap Identity/App Config (If Using OBO/JWT Delegation)
+
+Generate Entra app registrations and env output:
+
+```powershell
+az login
+.\scripts\bootstrap-entra-obo.ps1 -OutputEnvFile ".env.obo.generated"
+```
+
+Merge generated values into your runtime env:
+
+```powershell
+.\scripts\apply-obo-env.ps1 -SourceEnvFile ".env.obo.generated" -TargetEnvFile ".env"
+```
+
+### Step 4: Configure ServiceNow JWT Objects (If Using JWT Bearer Bridge)
+
+1. Generate key material and JWKS (if not already created):
+
+```bash
+python scripts/bootstrap_servicenow_jwt.py generate-key-material
+python scripts/bootstrap_servicenow_jwt.py generate-jwks
+```
+
+2. Build payload templates for ServiceNow OAuth/JWT records:
+
+```bash
+python scripts/bootstrap_servicenow_jwt.py build-payload-templates --jwks-url "<public-jwks-url>"
+```
+
+3. Provision/validate ServiceNow records (`oauth_jwt`, `oauth_entity`, `oauth_entity_profile`) and ensure a matching `sys_user` exists for the delegated identity claim value.
+
+### Step 5: Validate End-to-End Before Running MCP Clients
+
+Run the repeatable delegated smoke test:
+
+```bash
+python scripts/smoke_test_sn_jwt.py --show-claims
+```
+
+This validates:
+
+1. Entra user token acquisition.
+2. ServiceNow JWT bearer token exchange.
+3. Incident table API call through MCP auth path.
+
+### Step 6: Start the MCP Server
+
+```bash
+python -m mcp_server_servicenow.cli --transport stdio
+```
+
+Windows shortcut:
+
+```bat
+_start_mcp_server.bat
+```
+
+### First-Run Troubleshooting Checklist
+
+1. `oauth_token.do` returns 401/400:
+  - Query ServiceNow syslog entries from `com.glide.ui.ServletErrorListener` for real cause.
+2. `invalid_grant` with `User not found`:
+  - Ensure ServiceNow `sys_user` exists for the claim configured in JWT user mapping.
+3. OBO setup appears complete but flow still fails:
+  - Re-run bootstrap scripts and re-merge `.env` values.
+  - Verify `.env` does not contain stale client IDs or rotated secrets.
+
 ## Usage
 
 ### Command Line

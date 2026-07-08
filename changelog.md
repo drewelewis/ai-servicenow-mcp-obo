@@ -16,6 +16,7 @@
 - Updated ServiceNow JWT assertion construction to use the ServiceNow JWT client identifier as the assertion audience, matching the validated token endpoint semantics for this tenant: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).
 - Expanded env-merge key coverage to include additional ServiceNow JWT bearer settings (`SERVICENOW_SN_JWT_CLIENT_SECRET`, token endpoint, scope, kid, expected issuer/audience, TTL/cache tuning, and static assertion toggles): [scripts/apply-obo-env.ps1](scripts/apply-obo-env.ps1).
 - Updated README with validated ServiceNow JWT bearer tenant runbook details, new smoke-test usage, and reference to complete OBO pattern comparison documentation: [README.md](README.md).
+- Reworked README onboarding with a complete Getting Started runbook so first-time setup covers prerequisites, auth-path choices, identity bootstrap, ServiceNow JWT configuration, smoke-test validation, and first-run troubleshooting instead of clone-only guidance: [README.md](README.md).
 
 ### Fixed
 - Unified request-scoped bearer-token extraction/binding for both Entra OBO and ServiceNow JWT bearer delegated auth paths so incoming identity context is consistently required for delegated calls: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).
