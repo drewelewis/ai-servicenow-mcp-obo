@@ -71,6 +71,7 @@ This file tracks planned and in-progress work for general repository development
 
 ## Done
 
+- [x] Fixed Azure bootstrap Graph PATCH body handling and made delegated scope configuration idempotent so reruns no longer fail on malformed JSON or enabled-scope replacement. (2026-07-08)
 - [x] Extended Azure bootstrap output and env-merge automation to emit/carry ServiceNow JWT delegated-auth Azure values, and added a ServiceNow bootstrap helper for table discovery, key generation, registry upsert/validation, and env emission. (2026-07-08)
 - [x] Implemented ServiceNow OAuth JWT bearer delegated-user auth mode (incoming Entra token validation + signed JWT assertion exchange + user-scoped token cache) and wired CLI/interactive helper/env template configuration for local and MCP runtime use. (2026-07-08)
 - [x] Removed unintended broker delegated permission/grant to the SAML-based ServiceNow enterprise app (`65f131b1-2cf1-42b9-b700-ee1485da296b`) to restore intended OBO app-permission scope. (2026-07-07)

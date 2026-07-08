@@ -73,28 +73,59 @@ function Configure-ApiScope {
         [Parameter(Mandatory = $true)][string]$ScopeName
     )
 
-    $scopeId = [Guid]::NewGuid().ToString()
+    $appDetailRaw = az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications/$($App.id)" --output json
+    $appDetail = $appDetailRaw | ConvertFrom-Json
+    $existingScopes = @()
+    if ($null -ne $appDetail.api -and $null -ne $appDetail.api.oauth2PermissionScopes) {
+        $existingScopes = @($appDetail.api.oauth2PermissionScopes)
+    }
+
+    $matchingScope = $existingScopes | Where-Object { $_.value -eq $ScopeName } | Select-Object -First 1
+    $identifierUris = @()
+    if ($null -ne $appDetail.identifierUris) {
+        $identifierUris = @($appDetail.identifierUris)
+    }
+
+    if ($matchingScope -and ($identifierUris -contains $IdentifierUri)) {
+        Write-Host "Scope '$ScopeName' already configured on $IdentifierUri"
+        return $matchingScope.id
+    }
+
+    $scopeId = if ($matchingScope) { $matchingScope.id } else { [Guid]::NewGuid().ToString() }
+    $scopesForPatch = @()
+    if ($matchingScope) {
+        $scopesForPatch = $existingScopes
+    } else {
+        $scopesForPatch = @($existingScopes)
+        $scopesForPatch += @{
+            id = $scopeId
+            value = $ScopeName
+            type = "User"
+            isEnabled = $true
+            adminConsentDisplayName = "Access $ScopeName"
+            adminConsentDescription = "Allow the app to access this API on behalf of the signed-in user."
+            userConsentDisplayName = "Access $ScopeName"
+            userConsentDescription = "Allow the app to access this API on your behalf."
+        }
+    }
+
     $patchBody = @{
         identifierUris = @($IdentifierUri)
         api = @{
             requestedAccessTokenVersion = 2
-            oauth2PermissionScopes = @(
-                @{
-                    id = $scopeId
-                    value = $ScopeName
-                    type = "User"
-                    isEnabled = $true
-                    adminConsentDisplayName = "Access $ScopeName"
-                    adminConsentDescription = "Allow the app to access this API on behalf of the signed-in user."
-                    userConsentDisplayName = "Access $ScopeName"
-                    userConsentDescription = "Allow the app to access this API on your behalf."
-                }
-            )
+            oauth2PermissionScopes = @($scopesForPatch)
         }
     } | ConvertTo-Json -Depth 10 -Compress
 
-    Write-Host "Configuring API scope '$ScopeName' on $IdentifierUri"
-    az rest --method PATCH --uri "https://graph.microsoft.com/v1.0/applications/$($App.id)" --headers "Content-Type=application/json" --body $patchBody --output none
+    $tempBodyPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("servicenow-mcp-graph-patch-" + [Guid]::NewGuid().ToString() + ".json")
+    Set-Content -Path $tempBodyPath -Value $patchBody -Encoding UTF8
+
+    try {
+        Write-Host "Configuring API scope '$ScopeName' on $IdentifierUri"
+        az rest --method PATCH --uri "https://graph.microsoft.com/v1.0/applications/$($App.id)" --headers "Content-Type=application/json" --body "@$tempBodyPath" --output none
+    } finally {
+        Remove-Item -Path $tempBodyPath -Force -ErrorAction SilentlyContinue
+    }
 
     return $scopeId
 }
@@ -104,11 +135,13 @@ function Grant-DelegatedPermission {
         [Parameter(Mandatory = $true)][string]$ClientAppId,
         [Parameter(Mandatory = $true)][string]$ResourceAppId,
         [Parameter(Mandatory = $true)][string]$ScopeId,
+        [Parameter(Mandatory = $true)][string]$ScopeName,
         [Parameter(Mandatory = $true)][string]$ClientLabel
     )
 
     Write-Host "Granting delegated permission to $ClientLabel"
     az ad app permission add --id $ClientAppId --api $ResourceAppId --api-permissions "$ScopeId=Scope" --output none
+    az ad app permission grant --id $ClientAppId --api $ResourceAppId --scope $ScopeName --output none
 
     try {
         az ad app permission admin-consent --id $ClientAppId --output none
@@ -168,8 +201,8 @@ if ([string]::IsNullOrWhiteSpace($DownstreamIdentifierUri)) {
 $brokerScopeId = Configure-ApiScope -App $brokerApp -IdentifierUri $BrokerIdentifierUri -ScopeName $BrokerScopeName
 $downstreamScopeId = Configure-ApiScope -App $downstreamApp -IdentifierUri $DownstreamIdentifierUri -ScopeName $DownstreamScopeName
 
-Grant-DelegatedPermission -ClientAppId $brokerApp.appId -ResourceAppId $downstreamApp.appId -ScopeId $downstreamScopeId -ClientLabel "broker app"
-Grant-DelegatedPermission -ClientAppId $interactiveClientApp.appId -ResourceAppId $brokerApp.appId -ScopeId $brokerScopeId -ClientLabel "interactive client app"
+Grant-DelegatedPermission -ClientAppId $brokerApp.appId -ResourceAppId $downstreamApp.appId -ScopeId $downstreamScopeId -ScopeName $DownstreamScopeName -ClientLabel "broker app"
+Grant-DelegatedPermission -ClientAppId $interactiveClientApp.appId -ResourceAppId $brokerApp.appId -ScopeId $brokerScopeId -ScopeName $BrokerScopeName -ClientLabel "interactive client app"
 
 $clientSecret = Create-OrRotateBrokerSecret -BrokerAppId $brokerApp.appId -Years $SecretYears
 $tokenEndpoint = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"

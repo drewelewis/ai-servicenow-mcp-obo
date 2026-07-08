@@ -13,6 +13,7 @@
 ### Fixed
 - Unified request-scoped bearer-token extraction/binding for both Entra OBO and ServiceNow JWT bearer delegated auth paths so incoming identity context is consistently required for delegated calls: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).
 - Fixed the env merge helper so dry-run mode no longer creates backups and the conditional logic parses correctly in PowerShell: [scripts/apply-obo-env.ps1](scripts/apply-obo-env.ps1).
+- Fixed Azure bootstrap Graph PATCH body handling for PowerShell and made delegated scope configuration idempotent so rerunning the bootstrap no longer fails on enabled existing scopes: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1).
 
 ## 2026-07-07
 
