@@ -868,8 +868,12 @@ class ServiceNowClient:
             params["sysparm_query"] = options.query
             
         if options.order_by:
-            direction = "desc" if options.order_direction == "desc" else "asc"
-            params["sysparm_order_by"] = f"{options.order_by}^{direction}"
+            # ServiceNow Table API sorting is encoded in sysparm_query via ORDERBY/ORDERBYDESC.
+            order_token = f"ORDERBYDESC{options.order_by}" if options.order_direction == "desc" else f"ORDERBY{options.order_by}"
+            if params.get("sysparm_query"):
+                params["sysparm_query"] = f"{params['sysparm_query']}^{order_token}"
+            else:
+                params["sysparm_query"] = order_token
             
         return await self.request("GET", f"/api/now/table/{table}", params=params, ctx=ctx)
     
@@ -971,7 +975,8 @@ class ServiceNowMCP:
     # Resource handlers
     async def list_incidents(self, ctx: Context = None) -> str:
         """List recent incidents in ServiceNow"""
-        options = QueryOptions(limit=10)
+        # Use deterministic sorting so delegated views reliably return most-recent visible incidents.
+        options = QueryOptions(limit=10, order_by="sys_updated_on", order_direction="desc")
         result = await self.client.get_records("incident", options, ctx=ctx)
         return json.dumps(result, indent=2)
         

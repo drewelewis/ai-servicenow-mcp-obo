@@ -70,6 +70,7 @@ This file tracks planned and in-progress work for general repository development
 
 ## Done
 
+- [x] Fixed delegated `list_incidents` visibility gap by switching to ServiceNow-native ORDERBY query encoding and applying deterministic newest-first incident ordering for the default list path. (2026-07-08)
 - [x] Fixed remaining helper/smoke-test scope coupling by introducing dedicated ServiceNow JWT user-assertion acquisition scope support (`SERVICENOW_SN_JWT_USER_SCOPE`) instead of reusing OBO scope settings. (2026-07-08)
 - [x] Fixed the interactive helper to acquire only the selected auth mode instead of fetching both JWT and OBO user assertions in the same run, eliminating mixed-identity local test behavior. (2026-07-08)
 - [x] Re-aligned the interactive helper toward production-like delegated identity behavior by removing runtime username prompting, forcing Entra account selection, and printing the actual signed-in token identity returned by the login flow. (2026-07-08)

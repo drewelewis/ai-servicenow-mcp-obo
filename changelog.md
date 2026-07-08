@@ -31,6 +31,7 @@
 - Adjusted interactive helper delegated sign-in behavior to more closely mirror production by relying on the Entra account-selection flow, then printing the actual returned token identity instead of depending on a local prompt as the source of truth: [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py).
 - Fixed interactive helper local delegated testing so it now acquires only the assertion for the selected auth mode instead of fetching both JWT and OBO assertions in one run, preventing mixed-identity results when both configurations are present: [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py).
 - Fixed residual local auth scope coupling by introducing dedicated ServiceNow JWT user-assertion acquisition scope support (`SERVICENOW_SN_JWT_USER_SCOPE`) in both interactive and smoke-test utilities instead of reusing OBO scope settings: [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py), [scripts/smoke_test_sn_jwt.py](scripts/smoke_test_sn_jwt.py), [.env.example](.env.example).
+- Fixed delegated incident-list visibility inconsistency by encoding sort order with ServiceNow-native `ORDERBY/ORDERBYDESC` inside `sysparm_query` and making default `list_incidents` retrieval deterministic (`sys_updated_on` descending): [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).
 
 ## 2026-07-07
 
