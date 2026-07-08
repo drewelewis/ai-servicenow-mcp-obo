@@ -123,7 +123,7 @@ def main() -> int:
     cfg = {k: (v or "") for k, v in dotenv_values(args.env_file).items()}
     tenant_id = _require(cfg, "SERVICENOW_SN_JWT_TENANT_ID")
     public_client_id = (cfg.get("SERVICENOW_OBO_PUBLIC_CLIENT_ID") or cfg.get("SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID") or "").strip()
-    scope = (cfg.get("SERVICENOW_OBO_USER_SCOPE") or f"{_require(cfg, 'SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID')}/.default").strip()
+    scope = (cfg.get("SERVICENOW_SN_JWT_USER_SCOPE") or f"{_require(cfg, 'SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID')}/.default").strip()
 
     if not public_client_id:
         raise SystemExit("Missing SERVICENOW_OBO_PUBLIC_CLIENT_ID or SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID")

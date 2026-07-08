@@ -70,6 +70,12 @@ This file tracks planned and in-progress work for general repository development
 
 ## Done
 
+- [x] Fixed remaining helper/smoke-test scope coupling by introducing dedicated ServiceNow JWT user-assertion acquisition scope support (`SERVICENOW_SN_JWT_USER_SCOPE`) instead of reusing OBO scope settings. (2026-07-08)
+- [x] Fixed the interactive helper to acquire only the selected auth mode instead of fetching both JWT and OBO user assertions in the same run, eliminating mixed-identity local test behavior. (2026-07-08)
+- [x] Re-aligned the interactive helper toward production-like delegated identity behavior by removing runtime username prompting, forcing Entra account selection, and printing the actual signed-in token identity returned by the login flow. (2026-07-08)
+- [x] Updated the interactive helper to prompt for the Entra user at runtime for local OBO/JWT delegated testing, removing the need to store per-user login hints in `.env` for multi-user test runs. (2026-07-08)
+- [x] Added a dedicated ServiceNow JWT interactive login-hint setting so local helper sign-in can be forced to the intended Entra user instead of reusing a cached admin session. (2026-07-08)
+- [x] Fixed interactive helper local test flow so ServiceNow JWT mode auto-acquires and binds an incoming user assertion token (static local fallback) instead of failing with missing request-bound Authorization context. (2026-07-08)
 - [x] Added a prominent README section clarifying the production MCP + OBO runtime path, including explicit distinction between `_start_mcp_server.bat` (production server) and `_start_obo.bat` (interactive test helper). (2026-07-08)
 - [x] Reworked README onboarding with a complete Getting Started runbook covering prerequisites, auth pattern selection, bootstrap/merge steps, ServiceNow JWT setup sequence, end-to-end smoke testing, and first-run troubleshooting checks. (2026-07-08)
 - [x] Added a repeatable ServiceNow JWT delegated-flow smoke test script and documented one-command usage for ongoing validation. (2026-07-08)

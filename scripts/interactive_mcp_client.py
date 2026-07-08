@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from dotenv import load_dotenv
+import jwt
 
 # Allow running the script directly from scripts/ without requiring editable install.
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +77,53 @@ def _safe_print_result(raw: str) -> None:
         print(json.dumps(parsed, indent=2))
     except Exception:
         print(raw)
+
+
+def _decode_assertion_identity(access_token: str) -> str:
+    try:
+        claims = jwt.decode(
+            access_token,
+            options={
+                "verify_signature": False,
+                "verify_aud": False,
+                "verify_iss": False,
+            },
+        )
+    except Exception:
+        return "<unknown>"
+
+    return str(
+        claims.get("preferred_username")
+        or claims.get("email")
+        or claims.get("upn")
+        or claims.get("oid")
+        or claims.get("sub")
+        or "<unknown>"
+    )
+
+
+def _print_assertion_identity(label: str, access_token: str) -> None:
+    resolved = _decode_assertion_identity(access_token)
+    print(f"{label}: acquired user assertion for {resolved}")
+
+
+def _selected_auth_mode(args: argparse.Namespace) -> str:
+    sn_jwt_required_fields = [args.sn_jwt_tenant_id, args.sn_jwt_upstream_client_id, args.sn_jwt_client_id]
+    sn_jwt_key_configured = bool(args.sn_jwt_private_key or args.sn_jwt_private_key_path)
+    if all(sn_jwt_required_fields) and sn_jwt_key_configured:
+        return "sn_jwt"
+
+    obo_fields = [args.obo_tenant_id, args.obo_client_id, args.obo_client_secret, args.obo_scope]
+    if all(obo_fields):
+        return "obo"
+
+    if args.token:
+        return "token"
+
+    if args.client_id and args.client_secret and args.username and args.password:
+        return "oauth"
+
+    return "unknown"
 
 
 async def _run_menu(client: ServiceNowMCP) -> None:
@@ -315,7 +363,89 @@ async def _maybe_acquire_obo_user_assertion(args: argparse.Namespace) -> None:
 
     args.obo_user_assertion = access_token
     args.obo_allow_static_assertion = True
-    print("Auto-acquired OBO user assertion token via interactive Entra auth for local test mode.")
+    _print_assertion_identity(
+        "Auto-acquired OBO user assertion token via interactive Entra auth for local test mode",
+        access_token,
+    )
+
+
+async def _maybe_acquire_sn_jwt_user_assertion(args: argparse.Namespace) -> None:
+    """Acquire an Entra user token for local ServiceNow JWT bearer testing.
+
+    In interactive helper mode there is no MCP request transport carrying Authorization,
+    so we acquire a token and bind it as static local test assertion input.
+    """
+
+    required = [args.sn_jwt_tenant_id, args.sn_jwt_upstream_client_id, args.sn_jwt_client_id]
+    if not all(required):
+        return
+
+    existing_assertion = (args.sn_jwt_user_assertion or "").strip()
+    if existing_assertion and not _is_placeholder_assertion(existing_assertion):
+        return
+
+    authority = f"https://login.microsoftonline.com/{args.sn_jwt_tenant_id}"
+    upstream_scope = args.sn_jwt_user_scope or f"{args.sn_jwt_upstream_client_id}/.default"
+    public_client_id = args.obo_public_client_id or args.sn_jwt_upstream_client_id
+
+    try:
+        import msal  # type: ignore
+    except Exception as exc:
+        raise ValueError(
+            "Interactive ServiceNow JWT assertion acquisition requires the 'msal' package. "
+            "Install dependencies and retry."
+        ) from exc
+
+    app = msal.PublicClientApplication(client_id=public_client_id, authority=authority)
+
+    result = app.acquire_token_interactive(
+        scopes=[upstream_scope],
+        login_hint=(args.sn_jwt_username or args.obo_username or None),
+        prompt="select_account",
+    )
+
+    access_token = result.get("access_token")
+    if not access_token and args.obo_allow_device_code_fallback:
+        device_flow = app.initiate_device_flow(scopes=[upstream_scope])
+        if "user_code" not in device_flow:
+            raise ValueError(
+                "Failed to initialize device-code fallback flow for ServiceNow JWT assertion token acquisition"
+            )
+
+        message = device_flow.get("message", "Open the verification URL and enter the device code.")
+        print(message)
+        result = app.acquire_token_by_device_flow(device_flow)
+        access_token = result.get("access_token")
+
+    if not access_token:
+        error = result.get("error")
+        description = result.get("error_description") or "No access token returned"
+        hint = ""
+        if "AADSTS90009" in description:
+            hint = (
+                " Hint: set SERVICENOW_OBO_USER_SCOPE to '<resource-app-client-id>/.default' "
+                "(GUID-based) instead of 'api://<id>/.default'."
+            )
+        raise ValueError(
+            "Failed to auto-acquire ServiceNow JWT user assertion token via interactive auth. "
+            f"{error or 'unknown_error'}: {description}{hint}"
+        )
+
+    args.sn_jwt_user_assertion = access_token
+    args.sn_jwt_allow_static_assertion = True
+    _print_assertion_identity(
+        "Auto-acquired ServiceNow JWT user assertion token via interactive Entra auth for local test mode",
+        access_token,
+    )
+
+    expected_identity = (args.sn_jwt_username or args.obo_username or "").strip().lower()
+    if expected_identity:
+        actual_identity = _decode_assertion_identity(access_token).strip().lower()
+        if actual_identity != expected_identity:
+            raise ValueError(
+                "Interactive sign-in returned a different user than expected for ServiceNow JWT mode. "
+                f"Expected '{expected_identity}', got '{actual_identity}'. Sign out of cached sessions or choose the correct account."
+            )
 
 
 async def _async_main(args: argparse.Namespace) -> int:
@@ -324,7 +454,11 @@ async def _async_main(args: argparse.Namespace) -> int:
         return 0
 
     _validate_url(args.url)
-    await _maybe_acquire_obo_user_assertion(args)
+    selected_mode = _selected_auth_mode(args)
+    if selected_mode == "sn_jwt":
+        await _maybe_acquire_sn_jwt_user_assertion(args)
+    elif selected_mode == "obo":
+        await _maybe_acquire_obo_user_assertion(args)
     auth = _build_auth(args)
     client = ServiceNowMCP(instance_url=args.url, auth=auth)
 
@@ -389,6 +523,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sn-jwt-kid", default=os.environ.get("SERVICENOW_SN_JWT_KID"), help="Optional key ID header for JWT assertion signing")
     parser.add_argument("--sn-jwt-token-endpoint", default=os.environ.get("SERVICENOW_SN_JWT_TOKEN_ENDPOINT"), help="ServiceNow OAuth token endpoint (defaults to <instance>/oauth_token.do)")
     parser.add_argument("--sn-jwt-user-claim-source", default=os.environ.get("SERVICENOW_SN_JWT_USER_CLAIM_SOURCE", "preferred_username"), help="Preferred user claim to map to ServiceNow JWT subject")
+    parser.add_argument("--sn-jwt-username", default=os.environ.get("SERVICENOW_SN_JWT_USERNAME"), help="Entra username used to auto-acquire ServiceNow JWT user assertion for local testing")
+    parser.add_argument("--sn-jwt-user-scope", default=os.environ.get("SERVICENOW_SN_JWT_USER_SCOPE"), help="Optional scope used when acquiring ServiceNow JWT user assertion token (defaults to <SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID>/.default)")
     parser.add_argument("--sn-jwt-user-assertion", default=os.environ.get("SERVICENOW_SN_JWT_USER_ASSERTION"), help="Static fallback incoming user token for local testing only")
     parser.add_argument("--sn-jwt-expected-audience", default=os.environ.get("SERVICENOW_SN_JWT_EXPECTED_AUDIENCE"), help="Comma-separated expected incoming token audiences")
     parser.add_argument("--sn-jwt-expected-issuer", default=os.environ.get("SERVICENOW_SN_JWT_EXPECTED_ISSUER"), help="Comma-separated allowed incoming token issuers")
