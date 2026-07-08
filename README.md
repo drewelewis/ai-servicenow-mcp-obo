@@ -4,6 +4,21 @@
 
 A Model Context Protocol (MCP) server that interfaces with ServiceNow, allowing AI agents to access and manipulate ServiceNow data through a secure API using explicit MCP tools and resources.
 
+## Production MCP + OBO Path (Read This First)
+
+If your goal is delegated user access through MCP, this is the runtime path:
+
+1. Start the MCP server with `_start_mcp_server.bat` (or `python -m mcp_server_servicenow.cli`).
+2. Connect your MCP host/client to that running server process.
+3. MCP host sends user bearer token with each request.
+4. Server validates incoming token and performs delegated downstream exchange based on configured OBO/JWT mode.
+5. Server calls ServiceNow APIs as the delegated user.
+
+Important distinction:
+
+- `_start_mcp_server.bat`: production server entrypoint for MCP hosts.
+- `_start_obo.bat`: interactive local test helper only (useful for manual validation, not the production MCP host path).
+
 ## Features
 
 ### Resources

@@ -70,6 +70,7 @@ This file tracks planned and in-progress work for general repository development
 
 ## Done
 
+- [x] Added a prominent README section clarifying the production MCP + OBO runtime path, including explicit distinction between `_start_mcp_server.bat` (production server) and `_start_obo.bat` (interactive test helper). (2026-07-08)
 - [x] Reworked README onboarding with a complete Getting Started runbook covering prerequisites, auth pattern selection, bootstrap/merge steps, ServiceNow JWT setup sequence, end-to-end smoke testing, and first-run troubleshooting checks. (2026-07-08)
 - [x] Added a repeatable ServiceNow JWT delegated-flow smoke test script and documented one-command usage for ongoing validation. (2026-07-08)
 - [x] Added full OBO flow options documentation with architecture breakdown, Mermaid diagrams, and comparative analysis for direct OBO versus ServiceNow JWT bearer bridge patterns. (2026-07-08)
