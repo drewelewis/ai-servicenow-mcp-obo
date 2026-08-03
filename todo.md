@@ -15,6 +15,32 @@ This file tracks planned and in-progress work for general repository development
 - [ ] Review and improve test coverage for non-OBO modules.
 - [ ] Track cross-feature technical debt items.
 
+### Consumer Setup Tooling
+
+- [x] Add scripted plugin activation (`activate-plugin` via CI/CD API) to the bootstrap helper so consumers can enable ServiceNow plugins without the UI. (2026-07-31)
+- [x] Add a one-command `scripts/service_now_setup.py` orchestrator that runs the full ServiceNow-side setup (plugin, keys, JWKS, `oauth_jwt` record, env) against a consumer's own instance. (2026-07-31)
+- [x] Rewrite the README Getting Started section in plain English (bring-your-own PDI, admin login, run the setup script). (2026-07-31)
+- [x] Add a manual "enable account recovery" step to the README Getting Started runbook and renumber the following steps. (2026-07-31)
+- [x] Clarify README Step 3 to keep `admin` basic auth working alongside Multiple Provider SSO by designating `admin` as the Account Recovery (ACR) user (SSO for other users, basic auth preserved for the setup script and MCP server). (2026-07-31)
+- [x] Correct README Step 3 after testing disproved the ACR claim: the setup script enables multi-SSO (which alone does not block basic auth), Account Recovery is a UI-only feature the script never enables, and ACR designation only restores UI login not REST basic auth. Removed the manual account-recovery/authenticator enrollment step; documented `login.do?sysparm_prevent_sso=true` / `side_door.do` lockout recovery. (2026-07-31)
+- [x] Reorder README Getting Started steps: Step 3 is now the `.env` PDI-details update (clone/install folded in); account-recovery note moved into the setup step; remaining steps renumbered and cross-references fixed. (2026-07-31)
+- [x] Fix README Step 4 JWKS chicken-and-egg: split into 4a generate keys/JWKS (`--skip-records`), 4b publish `.servicenow-jwt/jwks.json` at a public URL, 4c re-run with `--jwks-url` to provision the `oauth_jwt` record. (2026-08-03)
+- [x] Convert the README JWKS sub-steps (4a/4b/4c) into whole-numbered steps 4/5/6 and renumber the rest to 7-10. (2026-08-03)
+- [x] Simplify `service_now_setup.py` final output to defer manual-step explanation to the README and reflect whether `oauth_jwt` provisioning ran or was skipped. (2026-08-03)
+- [x] Add a README Step 4 blurb explaining why a JWKS is needed (OAuth 2.0 JWT bearer flow, private-key signing, public-key verification via JWKS, passwordless/rotatable/delegated access). (2026-08-03)
+- [x] Correct the README Step 4 JWKS-purpose blurb to match `server.py`: server signs a JWT *assertion* carrying the delegated user (`sub`) to obtain a ServiceNow access token that is cached/reused per user, not a JWT per request; JWKS lets ServiceNow trust the server's signed user claim. (2026-08-03)
+- [x] Correct README Step 5/6: publish JWKS URL into `.env` as `SERVICENOW_SN_JWT_JWKS_URL`, make Step 6 read it from `.env` (flag becomes an override), and replace the hardcoded `main` raw-GitHub example with a `<branch>` placeholder. (2026-08-03)
+- [x] Make `service_now_setup.py` write provisioned `SERVICENOW_SN_JWT_*` values into `.env` automatically (upsert existing keys, append missing, never clobber the UI-only client secret) so consumers do not hand-edit `.env`; document as README Step 7. (2026-08-03)
+- [x] Document `SERVICENOW_SN_JWT_JWKS_URL` in `.env.example` so the template matches README Step 5 and the setup script's provisioning input. (2026-08-03)
+- [x] Realign numbering: drop numeric "Step N" prefixes from `service_now_setup.py` banners (descriptive phase labels) so they no longer clash with the README's Getting Started step numbers; README owns step numbering. (2026-08-03)
+- [x] Rewrite README Step 7 with beginner-friendly, click-by-click ServiceNow navigation for revealing the client secret and ensuring a matching user (no assumed ServiceNow experience). (2026-08-03)
+- [x] Set a `name` on the provisioned `oauth_jwt` record so it is no longer "(empty)" in the ServiceNow Application Registry and is easy to find. (2026-08-03)
+- [x] Rename the provisioned entity to "MCP Entra to ServiceNow OBO" to reflect the integration intent (Entra→ServiceNow OBO via MCP) rather than the JWT-bearer mechanism. (2026-08-03)
+- [x] Document the missing step: the smoke test must be run as an Entra user whose `preferred_username` maps to a ServiceNow user's email (Step 7b rewrite + Step 9 note) to avoid `invalid_grant`/`User not found`. (2026-08-03)
+- [x] Warn in README Step 7b + troubleshooting that mapping to the `admin` user is rejected with `Grant access token to admin is not allowed`; require a dedicated non-admin user. (2026-08-03)
+- [x] Add README Step 5 reset guidance (update instance URL/username/password after an instance reset) and a `--check-auth` preflight in `scripts/service_now_setup.py` to verify admin REST auth before setup. (2026-07-31)
+- [ ] When scripting Multiple Provider SSO property configuration in `service_now_setup.py`, keep `admin` basic auth working: enable multisso/auto-import but do NOT enable the Account Recovery lockout (it blocks REST basic auth even for the ACR user). Confirm exact `sys_properties` names against a live instance before hardcoding.
+
 ### OBO Compliance Plan (Spec-Driven)
 
 #### P0 (Must - Blockers for Spec Conformance)
@@ -89,9 +115,9 @@ This file tracks planned and in-progress work for general repository development
 - [x] Fixed Azure bootstrap Graph PATCH body handling and made delegated scope configuration idempotent so reruns no longer fail on malformed JSON or enabled-scope replacement. (2026-07-08)
 - [x] Extended Azure bootstrap output and env-merge automation to emit/carry ServiceNow JWT delegated-auth Azure values, and added a ServiceNow bootstrap helper for table discovery, key generation, registry upsert/validation, and env emission. (2026-07-08)
 - [x] Implemented ServiceNow OAuth JWT bearer delegated-user auth mode (incoming Entra token validation + signed JWT assertion exchange + user-scoped token cache) and wired CLI/interactive helper/env template configuration for local and MCP runtime use. (2026-07-08)
-- [x] Removed unintended broker delegated permission/grant to the SAML-based ServiceNow enterprise app (`65f131b1-2cf1-42b9-b700-ee1485da296b`) to restore intended OBO app-permission scope. (2026-07-07)
+- [x] Removed unintended broker delegated permission/grant to a SAML-based ServiceNow enterprise app to restore intended OBO app-permission scope. (2026-07-07)
 - [x] Reverted local OBO scope to OAuth-capable app resource after confirming tenant `ServiceNow` app is SAML-only (AADSTS399274), and documented required non-SAML OBO audience guidance for end-to-end delegated access. (2026-07-07)
-- [x] Granted broker app delegated `user_impersonation` permission to the tenant ServiceNow resource app and switched `SERVICENOW_OBO_SCOPE` to ServiceNow audience (`https://dev397814.service-now.com/.default`) for direct API OBO token acceptance. (2026-07-07)
+- [x] Granted broker app delegated `user_impersonation` permission to the tenant ServiceNow resource app and switched `SERVICENOW_OBO_SCOPE` to ServiceNow audience (`https://<your-instance>.service-now.com/.default`) for direct API OBO token acceptance. (2026-07-07)
 - [x] Corrected local ServiceNow instance URL in `.env` from `/login.do` page URL to root instance URL so API requests resolve to `/api/now/...` and do not redirect to session timeout. (2026-07-07)
 - [x] Fixed Entra interactive sign-in failure AADSTS500113 by configuring localhost public-client redirect URI on the interactive app registration and updating bootstrap automation to set it by default. (2026-07-07)
 - [x] Added missing local interactive OBO settings (`SERVICENOW_OBO_PUBLIC_CLIENT_ID`, `SERVICENOW_OBO_USER_SCOPE`) to `.env` so `_start_obo.bat` acquires a broker-audience user token instead of self-resource requests. (2026-07-07)

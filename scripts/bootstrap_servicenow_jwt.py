@@ -19,6 +19,7 @@ import base64
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -139,6 +140,23 @@ class ServiceNowAdminClient:
             data=json.dumps(payload),
             timeout=self.timeout,
         )
+        response.raise_for_status()
+        return response.json().get("result", {})
+
+    def _api_url(self, path: str) -> str:
+        return f"{self.instance_url}/{path.lstrip('/')}"
+
+    def post_api(self, path: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        response = self.session.post(
+            self._api_url(path),
+            data=json.dumps(payload) if payload is not None else None,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json().get("result", {})
+
+    def get_api(self, path: str) -> Dict[str, Any]:
+        response = self.session.get(self._api_url(path), timeout=self.timeout)
         response.raise_for_status()
         return response.json().get("result", {})
 
@@ -288,6 +306,7 @@ def _build_payload_templates(args: argparse.Namespace) -> int:
         raise ValueError("JWKS URL is required to build payload templates")
 
     oauth_jwt_payload = {
+        "name": entity_name,
         "clock_skew": str(args.clock_skew),
         "jwks_url": jwks_url,
         "enable_jti_verification": str(args.enable_jti_verification).lower(),
@@ -452,6 +471,87 @@ def _emit_env(args: argparse.Namespace) -> int:
     return 0
 
 
+_CICD_STATUS_LABELS = {
+    "0": "Pending",
+    "1": "Running",
+    "2": "Successful",
+    "3": "Failed",
+    "4": "Canceled",
+}
+
+
+def _activate_plugin(args: argparse.Namespace) -> int:
+    client = ServiceNowAdminClient(
+        instance_url=args.url,
+        username=args.username,
+        password=args.password,
+        token=args.token,
+        timeout=args.timeout,
+    )
+
+    activate_path = f"api/sn_cicd/plugin/{args.plugin_id}/activate"
+    result = client.post_api(activate_path)
+    progress = result.get("links", {}).get("progress", {})
+    progress_id = progress.get("id")
+
+    if not progress_id:
+        print(
+            json.dumps(
+                {
+                    "plugin_id": args.plugin_id,
+                    "action": "activate",
+                    "result": result,
+                    "note": "No progress id returned; plugin may already be active.",
+                },
+                indent=2,
+            )
+        )
+        return 0 if result.get("status") in (None, "2") else 1
+
+    deadline = time.monotonic() + args.max_wait
+    last_status = result.get("status", "0")
+    percent = result.get("percent_complete", 0)
+    while True:
+        progress_result = client.get_api(f"api/sn_cicd/progress/{progress_id}")
+        last_status = progress_result.get("status", last_status)
+        percent = progress_result.get("percent_complete", percent)
+        label = _CICD_STATUS_LABELS.get(str(last_status), str(last_status))
+
+        if str(last_status) in ("2", "3", "4"):
+            summary = {
+                "plugin_id": args.plugin_id,
+                "action": "activate",
+                "status": last_status,
+                "status_label": label,
+                "percent_complete": percent,
+                "status_message": progress_result.get("status_message", ""),
+                "error": progress_result.get("error", ""),
+                "progress_id": progress_id,
+            }
+            print(json.dumps(summary, indent=2))
+            return 0 if str(last_status) == "2" else 1
+
+        if time.monotonic() >= deadline:
+            print(
+                json.dumps(
+                    {
+                        "plugin_id": args.plugin_id,
+                        "action": "activate",
+                        "status": last_status,
+                        "status_label": label,
+                        "percent_complete": percent,
+                        "progress_id": progress_id,
+                        "note": f"Timed out after {args.max_wait}s; activation still running. Re-poll progress id if needed.",
+                    },
+                    indent=2,
+                ),
+                file=sys.stderr,
+            )
+            return 2
+
+        time.sleep(args.poll_interval)
+
+
 def _add_connection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", default=os.environ.get("SERVICENOW_INSTANCE_URL"), help="ServiceNow instance URL")
     parser.add_argument("--username", default=os.environ.get("SERVICENOW_USERNAME"), help="ServiceNow admin username")
@@ -472,6 +572,16 @@ def _build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--field-limit", type=int, default=200, help="Maximum dictionary fields per table")
     discover.set_defaults(func=_discover)
 
+    activate = subparsers.add_parser(
+        "activate-plugin",
+        help="Activate a ServiceNow plugin via the CI/CD API and poll until completion",
+    )
+    _add_connection_args(activate)
+    activate.add_argument("--plugin-id", required=True, help="Plugin identifier, e.g. com.snc.integration.sso.multi.installer")
+    activate.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between progress polls")
+    activate.add_argument("--max-wait", type=float, default=600.0, help="Maximum seconds to wait for activation to complete")
+    activate.set_defaults(func=_activate_plugin)
+
     keygen = subparsers.add_parser("generate-key-material", help="Generate RSA key pair and certificate PEM files")
     keygen.add_argument("--output-dir", default=str(REPO_ROOT / ".servicenow-jwt"), help="Output directory for generated PEM files")
     keygen.add_argument("--basename", default="servicenow-jwt", help="Base file name prefix")
@@ -491,7 +601,7 @@ def _build_parser() -> argparse.ArgumentParser:
     jwks.set_defaults(func=_generate_jwks)
 
     payloads = subparsers.add_parser("build-payload-templates", help="Generate ServiceNow payload JSON templates for JWT bearer provisioning")
-    payloads.add_argument("--entity-name", default="ServiceNow MCP JWT Bearer", help="Name for the oauth_entity record")
+    payloads.add_argument("--entity-name", default="MCP Entra to ServiceNow OBO", help="Name for the oauth_entity record")
     payloads.add_argument("--jwt-provider-name", default="", help="Optional name for the JWT provider record notes")
     payloads.add_argument("--profile-name", default="", help="Optional name for the oauth_entity_profile record")
     payloads.add_argument("--jwks-url", required=True, help="JWKS URL that ServiceNow can fetch")

@@ -65,26 +65,45 @@ Notes:
 
 ## Getting Started
 
-This project requires identity and ServiceNow configuration beyond a simple clone-and-run flow.
+This is a reusable integration. You bring your own ServiceNow instance and your own
+Entra tenant, and the scripts in this repo configure them for you. The steps below are
+written in plain English so you can follow them from a clean machine.
 
-Use the runbook below for first-time setup.
+> **The short version:** once you have a ServiceNow instance and its admin login,
+> `scripts/service_now_setup.py` does the ServiceNow-side setup for you — it activates
+> the required plugin, generates the signing keys, and creates the OAuth/JWT record.
+> You do not have to click through the ServiceNow UI to wire any of that up.
 
-### Prerequisites
+### What you need before you start
 
-1. Python 3.10+ available on PATH.
-2. ServiceNow instance admin access for OAuth/JWT object setup.
-3. Azure CLI (`az`) installed and authenticated if you plan to use Entra bootstrap automation.
-4. Ability to complete interactive Entra sign-in (browser popup or device code).
+1. A computer with Python 3.10 or newer.
+2. A ServiceNow instance (see Step 1) and its admin username and password (see Step 2).
+3. (Only if you want delegated Entra sign-in) The Azure CLI (`az`) installed and signed in.
 
-### Step 1: Clone and Create Local Environment
+### Step 1: Get a ServiceNow instance (PDI)
+
+Sign up for a free ServiceNow Personal Developer Instance (PDI) at
+<https://developer.servicenow.com/>. Request an instance and wait for it to come online.
+You will end up with a URL that looks like `https://dev123456.service-now.com/`.
+
+### Step 2: Get the admin username and password
+
+When ServiceNow provisions your PDI it shows you the admin username (`admin`) and a
+generated password. Copy both — you will paste them into the `.env` file in Step 3.
+(If you lose the password, you can reset it from the ServiceNow Developer portal.)
+
+### Step 3: Update the `.env` with your PDI details
+
+If you have not already, clone this repo and install it:
 
 ```bash
 git clone https://github.com/drewelewis/ai-servicenow-mcp-obo.git
 cd ai-servicenow-mcp-obo
 python -m venv .venv
+pip install -e .
 ```
 
-Windows helper path:
+On Windows you can use the helper scripts instead:
 
 ```bat
 _env_create.bat
@@ -92,70 +111,210 @@ _env_activate.bat
 _install.bat
 ```
 
-Cross-platform manual path:
+Then copy `.env.example` to `.env` and fill in the three values from Steps 1 and 2:
 
 ```bash
-pip install -e .
+SERVICENOW_INSTANCE_URL=https://dev123456.service-now.com/
+SERVICENOW_USERNAME=admin
+SERVICENOW_PASSWORD=your-admin-password
 ```
 
-### Step 2: Choose Your Auth Pattern
+The `.env` file is git-ignored, so your credentials are never committed.
 
-1. Basic/token/OAuth direct mode:
-  - Quickest path for legacy or static credentials.
-2. Entra OBO mode:
-  - For delegated user token exchange in Entra.
-3. ServiceNow JWT bearer bridge mode (recommended for delegated access in this tenant):
-  - Validates incoming Entra user token, then exchanges signed JWT assertion at ServiceNow oauth_token.do.
+> **If you reset your instance or admin password**, update these three values in `.env` to
+> match the new instance. Resetting a Personal Developer Instance can change the
+> `devNNNNNN` number in `SERVICENOW_INSTANCE_URL` and always issues a new
+> `SERVICENOW_PASSWORD` (the username is normally still `admin`). Type the new password
+> directly into `.env` — never share it in chat.
 
-For full architecture comparison and diagrams of OBO options, see [obo-flow-options.md](obo-flow-options.md).
+After saving, confirm admin basic auth works before running the full setup:
 
-### Step 3: Bootstrap Identity/App Config (If Using OBO/JWT Delegation)
+```bash
+python scripts/service_now_setup.py --check-auth
+```
 
-Generate Entra app registrations and env output:
+A `401 Unauthorized` here means the credentials in `.env` do not match the instance.
+
+### Step 4: Generate the signing keys and JWKS document
+
+**Why a JWKS is needed:** This integration calls ServiceNow **on behalf of the signed-in
+user** (the delegated / on-behalf-of flow) without storing that user's ServiceNow password.
+When the server needs a ServiceNow access token, it mints a short-lived JWT **assertion** —
+signed with a private RSA key that never leaves your machine — whose `sub` claim names the
+user to act as. It sends that assertion to ServiceNow's OAuth token endpoint using the JWT
+bearer grant, and ServiceNow returns an access token, which the server **caches per user and
+reuses** until it nears expiry (a new assertion is only minted when no valid token is
+cached). ServiceNow verifies the assertion's signature using the matching **public** key,
+published as a JWKS (JSON Web Key Set) — the standard JSON document that holds the public key
+and its key ID (`kid`). Because ServiceNow fetches the JWKS from a URL you control, it can
+trust your server's signed claim about which user is acting **without ever holding your
+private key**, and you can rotate keys by republishing an updated JWKS.
+
+The setup script does the ServiceNow-side work for you. Because ServiceNow has to fetch
+your **public** key from a URL it can reach, run it first in generate-only mode so you have
+the JWKS document to publish before any ServiceNow records are created:
+
+```bash
+python scripts/service_now_setup.py --skip-records
+```
+
+This activates the required plugin, generates the RSA signing key and certificate on your
+machine, and writes the public JWKS document to `.servicenow-jwt/jwks.json`. The private
+key never leaves your machine and is git-ignored.
+
+### Step 5: Publish the JWKS document at a public URL
+
+Publish `.servicenow-jwt/jwks.json` somewhere ServiceNow can reach — for example, commit it
+to your fork and use its raw GitHub URL
+(`https://raw.githubusercontent.com/<owner>/<repo>/<branch>/.servicenow-jwt/jwks.json`, using
+your default branch, e.g. `master` or `main`). Only the public key is published; the private
+key stays on your machine.
+
+Record that URL in your `.env` as `SERVICENOW_SN_JWT_JWKS_URL` so the next step can read it
+automatically:
+
+```dotenv
+SERVICENOW_SN_JWT_JWKS_URL=https://raw.githubusercontent.com/<owner>/<repo>/<branch>/.servicenow-jwt/jwks.json
+```
+
+### Step 6: Provision the ServiceNow `oauth_jwt` record
+
+Run the setup script again to create the ServiceNow OAuth client record. It reads the JWKS
+URL from `SERVICENOW_SN_JWT_JWKS_URL` in your `.env` (set in Step 5), so no flag is needed:
+
+```bash
+python scripts/service_now_setup.py
+```
+
+If you prefer to pass it explicitly (or override `.env`), use the `--jwks-url` flag:
+
+```bash
+python scripts/service_now_setup.py --jwks-url "<public-jwks-url>"
+```
+
+What the full run does for you, in order:
+
+1. Installs (activates) the required ServiceNow plugin via the CI/CD API.
+2. Generates the RSA signing key and certificate on your machine.
+3. Generates the public JWKS document from that key.
+4. Builds the ServiceNow OAuth/JWT provisioning payloads.
+5. Creates (or updates) the ServiceNow `oauth_jwt` client record.
+6. Writes the resulting `SERVICENOW_SN_JWT_*` values to `servicenow-jwt-bootstrap.env`.
+7. Updates your `.env` in place with the provisioned `SERVICENOW_SN_JWT_*` values (for
+   example the new `SERVICENOW_SN_JWT_CLIENT_ID`), so you do not have to copy them by hand.
+   The one value it cannot fill is `SERVICENOW_SN_JWT_CLIENT_SECRET` (visible only in the
+   ServiceNow UI); an existing secret is never overwritten, and a placeholder is added if the
+   key is missing.
+
+Every step is idempotent, so it is safe to re-run. If you already host the JWKS somewhere
+public, you can skip Steps 4-5 and run this command directly.
+
+> **No manual SSO or account-recovery step is required.** The plugin the script activates
+> enables Multiple Provider SSO, and enabling multi-SSO on its own does **not** block basic
+> auth — the setup script and the MCP server keep calling the ServiceNow REST API as
+> `admin` over basic auth. **Do not enable Account Recovery.** It is a separate feature that
+> is only ever turned on manually in the ServiceNow UI; when enabled it blocks local (basic
+> auth) login for every account except the designated Account Recovery (ACR) user, and even
+> designating `admin` as the ACR user only restores the interactive UI side-door login, not
+> REST basic auth. Leaving Account Recovery off (the default) is all that is needed. If you
+> ever get locked out of the login page, force the local login form with
+> `https://<your-instance>.service-now.com/login.do?sysparm_prevent_sso=true` (or
+> `/side_door.do`) and sign in as `admin`.
+
+### Step 7: Finish the two things only a human can do
+
+The script fills in every `SERVICENOW_SN_JWT_*` value in your `.env` except the client
+secret, and it cannot create a matching user for you. ServiceNow does not expose either item
+over the API, so complete the two tasks below in the ServiceNow web UI. Each is written for
+someone who has never used ServiceNow before.
+
+**7a. Copy the client secret into `.env`**
+
+1. Sign in to your instance in a browser: `https://<your-instance>.service-now.com` (use the
+   `admin` credentials from your `.env`).
+2. In the **Filter navigator** (the search box at the top of the left menu), type
+   `Application Registry` and click the **Application Registry** result under
+   *System OAuth*.
+3. In the list, find the row whose **Client ID** matches `SERVICENOW_SN_JWT_CLIENT_ID` from
+   your `.env` (the setup run also printed it). It is named
+   *MCP Entra to ServiceNow OBO*. Click that row to open it.
+4. Find the **Client Secret** field. It is masked. Click the lock icon (🔒) at the right of
+   the field to unlock it, then select and copy the revealed value.
+5. Open your `.env`, find the `SERVICENOW_SN_JWT_CLIENT_SECRET=` line, and replace the
+   `__SET_FROM_SERVICENOW_UI__` placeholder with the copied secret. Save the file. Type the
+   value directly — do not paste it into chat or commit it (`.env` is git-ignored).
+
+   *Note:* some JWT-bearer configurations do not require a client secret. If the smoke test in
+   Step 9 succeeds while the placeholder is still present, you can leave that line as-is.
+
+**7b. Make sure the Entra user you sign in as also exists in ServiceNow**
+
+This integration is delegated: when you run the smoke test (Step 9) or use the MCP server,
+you sign in as a **real Microsoft Entra user**, and the flow acts in ServiceNow *as that same
+person*. ServiceNow finds the matching account by comparing the Entra token's
+`SERVICENOW_SN_JWT_USER_CLAIM_SOURCE` claim (default `preferred_username`, i.e. the user's
+email / UPN) against the ServiceNow user field configured on the OAuth record (default
+`email`). The two directories must therefore contain the **same identity**. If no ServiceNow
+user has that email, ServiceNow rejects the exchange with `invalid_grant` / `User not found`.
+
+1. Find the exact Entra identity you will sign in as. The reliable way is to run the smoke
+   test once and read the claim it prints:
+
+   ```bash
+   python scripts/smoke_test_sn_jwt.py --show-claims
+   ```
+
+   In the `User token claims` block, copy the `preferred_username` value
+   (for example `jane.doe@contoso.onmicrosoft.com`). That is the identity ServiceNow must
+   recognize.
+
+2. In ServiceNow, open the **Filter navigator**, type `Users`, and click **Users** under
+   *User Administration*.
+3. Search (by **Email**) for that `preferred_username` value.
+   - **If a matching user already exists**, open it, confirm the **Email** equals that value,
+     and make sure the user is **Active** with the role(s) needed for the operations you will
+     test (for incident queries, the `itil` role).
+   - **If no user exists**, click **New**, set the **User ID** (e.g. `mcp.obo.test`) and
+     **Email** to that value, click **Submit**, mark the user **Active**, and grant the
+     required role(s).
+
+   > **Do not map this identity to the `admin` user** (or any account holding the `admin` /
+   > `security_admin` role). ServiceNow blocks delegated JWT-bearer token grants for
+   > privileged accounts and returns
+   > `invalid_grant` / `Grant access token to admin is not allowed`. Always use a dedicated,
+   > non-privileged user with only the role(s) it needs. If you previously set the target
+   > email on the `admin` user, clear it first (emails must be unique) and move it to the
+   > dedicated user.
+4. Re-run the smoke test in Step 9; the `User not found` error should be gone.
+
+> Tip: sign in at the device-code prompt as the *same* Entra user whose email you mapped
+> here. Signing in as a different Entra user will again fail with `User not found` unless that
+> user is also mapped in ServiceNow.
+
+### Step 8 (optional): Set up Entra delegated sign-in
+
+If you want on-behalf-of user sign-in through Entra, register the apps and merge the values:
 
 ```powershell
 az login
 .\scripts\bootstrap-entra-obo.ps1 -OutputEnvFile ".env.obo.generated"
-```
-
-Merge generated values into your runtime env:
-
-```powershell
 .\scripts\apply-obo-env.ps1 -SourceEnvFile ".env.obo.generated" -TargetEnvFile ".env"
 ```
 
-### Step 4: Configure ServiceNow JWT Objects (If Using JWT Bearer Bridge)
+For a full comparison of the delegated-auth options and diagrams, see [obo-flow-options.md](obo-flow-options.md).
 
-1. Generate key material and JWKS (if not already created):
-
-```bash
-python scripts/bootstrap_servicenow_jwt.py generate-key-material
-python scripts/bootstrap_servicenow_jwt.py generate-jwks
-```
-
-2. Build payload templates for ServiceNow OAuth/JWT records:
-
-```bash
-python scripts/bootstrap_servicenow_jwt.py build-payload-templates --jwks-url "<public-jwks-url>"
-```
-
-3. Provision/validate ServiceNow records (`oauth_jwt`, `oauth_entity`, `oauth_entity_profile`) and ensure a matching `sys_user` exists for the delegated identity claim value.
-
-### Step 5: Validate End-to-End Before Running MCP Clients
-
-Run the repeatable delegated smoke test:
+### Step 9: Check that it works
 
 ```bash
 python scripts/smoke_test_sn_jwt.py --show-claims
 ```
 
-This validates:
+At the device-code prompt, sign in as the **Entra user you mapped in Step 7b** (the one whose
+`preferred_username` matches a ServiceNow user's email). This confirms the user token is
+acquired, exchanged at ServiceNow *as that delegated user*, and that an incident query
+succeeds through the MCP auth path.
 
-1. Entra user token acquisition.
-2. ServiceNow JWT bearer token exchange.
-3. Incident table API call through MCP auth path.
-
-### Step 6: Start the MCP Server
+### Step 10: Start the MCP server
 
 ```bash
 python -m mcp_server_servicenow.cli --transport stdio
@@ -167,15 +326,20 @@ Windows shortcut:
 _start_mcp_server.bat
 ```
 
-### First-Run Troubleshooting Checklist
+### If something goes wrong
 
 1. `oauth_token.do` returns 401/400:
-  - Query ServiceNow syslog entries from `com.glide.ui.ServletErrorListener` for real cause.
+  - Check the ServiceNow system log (`com.glide.ui.ServletErrorListener`) for the real cause.
 2. `invalid_grant` with `User not found`:
-  - Ensure ServiceNow `sys_user` exists for the claim configured in JWT user mapping.
-3. OBO setup appears complete but flow still fails:
-  - Re-run bootstrap scripts and re-merge `.env` values.
-  - Verify `.env` does not contain stale client IDs or rotated secrets.
+  - Make sure a ServiceNow user exists whose email matches the claim configured in Step 7b.
+3. `invalid_grant` with `Grant access token to admin is not allowed`:
+  - You mapped the identity to the `admin` user (or an account with the `admin` /
+    `security_admin` role). ServiceNow blocks delegated grants for privileged accounts.
+    Clear that email from the privileged user and map it to a dedicated non-admin user
+    (see Step 7b).
+4. Setup looks complete but the flow still fails:
+  - Re-run `scripts/service_now_setup.py` (it is safe to re-run) and re-check `.env`.
+  - Verify `.env` does not contain a stale client ID or an old client secret.
 
 ## Usage
 
