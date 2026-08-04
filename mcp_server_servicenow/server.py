@@ -939,7 +939,6 @@ class ServiceNowMCP:
         ])
         
         # Register resources
-        self.mcp.resource("servicenow://incidents")(self.list_incidents)
         self.mcp.resource("servicenow://incidents/{number}")(self.get_incident)
         self.mcp.resource("servicenow://users")(self.list_users)
         self.mcp.resource("servicenow://knowledge")(self.list_knowledge)
@@ -948,6 +947,7 @@ class ServiceNowMCP:
         self.mcp.resource("servicenow://schema/{table}")(self.get_table_schema)
         
         # Register tools
+        self.mcp.tool(name="list_incidents")(self.list_incidents)
         self.mcp.tool(name="create_incident")(self.create_incident)
         self.mcp.tool(name="update_incident")(self.update_incident)
         self.mcp.tool(name="search_records")(self.search_records)

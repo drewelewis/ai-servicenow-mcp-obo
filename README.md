@@ -23,7 +23,6 @@ Important distinction:
 
 ### Resources
 
-- `servicenow://incidents`: List recent incidents
 - `servicenow://incidents/{number}`: Get a specific incident by number
 - `servicenow://users`: List users
 - `servicenow://knowledge`: List knowledge articles
@@ -31,9 +30,16 @@ Important distinction:
 - `servicenow://tables/{table}`: Get records from a specific table
 - `servicenow://schema/{table}`: Get the schema for a table
 
+> **Delegated identity flows through tools, not resources.** In the OBO / JWT-bearer
+> mode the user's bearer token rides on MCP `tools/call` requests, but not on
+> `resources/read` requests. Any operation that must run *as the signed-in user*
+> is therefore exposed as a **tool** (see below). The resources above are usable in
+> non-delegated / static-assertion setups.
+
 ### Tools
 
 #### Basic Tools
+- `list_incidents`: List the most recently updated incidents visible to the delegated user
 - `create_incident`: Create a new incident
 - `update_incident`: Update an existing incident
 - `search_records`: Search for records using text query
@@ -399,6 +405,57 @@ Windows shortcut:
 ```bat
 _start_mcp_server.bat
 ```
+
+### Step 11: Try it interactively with MCP Inspector (delegated tool calls)
+
+Once the smoke test passes you can exercise the real delegated path by hand using the
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector). Because delegated
+identity travels on the request's `Authorization` header, use the **SSE** transport (stdio
+is a pipe and carries no HTTP headers, so it can list tools but cannot make delegated
+calls).
+
+1. **Start the server in SSE mode** (leave it running):
+
+   ```bash
+   python -m mcp_server_servicenow.cli --transport sse
+   ```
+
+   It listens on `http://127.0.0.1:8000` and serves the stream at `/sse`.
+
+2. **Acquire a user token** for the broker audience via device-code sign-in and copy it to
+   your clipboard (never paste tokens into chat). On Windows PowerShell:
+
+   ```powershell
+   python -c "import msal,os,sys; from dotenv import load_dotenv; load_dotenv(); t=os.environ['SERVICENOW_SN_JWT_TENANT_ID']; pc=os.environ.get('SERVICENOW_OBO_PUBLIC_CLIENT_ID') or os.environ['SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID']; up=os.environ['SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID']; app=msal.PublicClientApplication(pc, authority='https://login.microsoftonline.com/'+t); f=app.initiate_device_flow(scopes=[up+'/.default']); print(f['message'], file=sys.stderr); r=app.acquire_token_by_device_flow(f); sys.stdout.write(r.get('access_token') or ('ERROR: '+str(r.get('error_description'))))" | Set-Clipboard
+   ```
+
+   Open the printed URL, enter the code, and sign in as the **Entra user you mapped in
+   Step 7b**. The token is short-lived (~1 hour) — re-run this to refresh it.
+
+3. **Launch the Inspector in writable mode** (no preset server, so you can add an SSE
+   connection with a custom header):
+
+   ```bash
+   npx -y @modelcontextprotocol/inspector
+   ```
+
+   Open the printed `http://localhost:6274/...` URL.
+
+4. **Add the SSE connection** in the Inspector:
+   - **Transport Type**: `SSE`
+   - **URL**: `http://127.0.0.1:8000/sse`
+   - Under **Custom Headers**, add `Authorization` = `Bearer <paste your clipboard token>`.
+   - Leave the **OAuth** section empty (if OAuth is configured, the Inspector owns the
+     `Authorization` header and ignores your custom value).
+
+5. **Connect**, open the **Tools** tab, **List Tools**, then run **`list_incidents`** (no
+   inputs). It returns the incidents visible to your delegated user. Watch the server
+   terminal for `POST /oauth_token.do` and `GET /api/now/table/incident` returning `200 OK`.
+
+> If a tool call fails with `Missing incoming user token`, the `Authorization` header did
+> not reach the server — confirm you are on the **SSE** transport (not stdio) and the header
+> value starts with `Bearer `. An `invalid_grant` / expired-token error means the clipboard
+> token aged out; refresh it with the command in step 2.
 
 ### If something goes wrong
 

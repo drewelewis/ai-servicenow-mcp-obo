@@ -1,6 +1,15 @@
 ## 2026-08-04
 
+### Added
+- Registered `list_incidents` as an MCP **tool** so it is callable from the MCP Inspector Tools tab and other tool-only clients; it returns the 10 most recently updated incidents visible to the delegated user (sorted `sys_updated_on desc`): [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py). Module parses with no errors.
+
+### Removed
+- Removed the `servicenow://incidents` **resource** registration for `list_incidents`. Resource reads (`resources/read`) do not receive the request-scoped HTTP context carrying the `Authorization: Bearer` header, so the delegated OBO/JWT-bearer exchange had no incoming user token and failed with `Missing incoming user token`. `list_incidents` is now exposed only as a tool (the tool-call path does carry the header): [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py). Module parses with no errors.
+
 ### Changed
+- Updated the README Features list to match the tool/resource change: dropped `servicenow://incidents` from Resources, added `list_incidents` to Basic Tools, and added a note that delegated identity flows through tools (not resources): [README.md](README.md).
+- Added README **Step 11 — "Try it interactively with MCP Inspector (delegated tool calls)"** documenting the validated end-to-end interactive path: start the server in SSE mode, acquire a short-lived user token via device-code sign-in piped to the clipboard, launch the MCP Inspector in writable mode, add an SSE connection with an `Authorization: Bearer` custom header (leaving OAuth empty), and run `list_incidents`; includes the stdio-has-no-headers rationale and `Missing incoming user token` / expired-token troubleshooting: [README.md](README.md).
+
 - Updated the README "Interactive CLI Helper" section to document the new device-code default: the helper prints a verification URL + code (`https://microsoft.com/devicelogin`) so testers sign in with any browser, plus the `--use-device-code` (default on, `SERVICENOW_USE_DEVICE_CODE`) and `--no-device-code` flags and the repurposed `SERVICENOW_OBO_ALLOW_DEVICE_CODE_FALLBACK` note: [README.md](README.md).
 - Changed the interactive MCP test client to acquire the Entra user token via the **device-code flow by default**: it now prints a verification URL and code (for `https://microsoft.com/devicelogin`) so the tester can sign in with any browser, instead of MSAL auto-launching the system browser (Edge), which was crashing on some hosts. Added a shared `_acquire_entra_user_token` / `_acquire_by_device_code` helper used by both the OBO and ServiceNow JWT assertion paths, plus `--use-device-code` (default on, also via `SERVICENOW_USE_DEVICE_CODE`) and `--no-device-code` (opt back into MSAL interactive browser sign-in) flags: [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py). Validated the module parses cleanly.
 

@@ -15,6 +15,12 @@ This file tracks planned and in-progress work for general repository development
 - [ ] Review and improve test coverage for non-OBO modules.
 - [ ] Track cross-feature technical debt items.
 
+### MCP Server Tools
+
+- [x] Register `list_incidents` as an MCP tool (was resource-only) so it appears in the Inspector Tools tab and returns most-recent incidents for the delegated user. (2026-08-04)
+- [x] Remove the `servicenow://incidents` resource registration (resource reads lack the request Authorization header, so delegated OBO fails); expose `list_incidents` as a tool only. (2026-08-04)
+- [x] Update README Features list (drop `servicenow://incidents` resource, add `list_incidents` tool, note delegated identity flows through tools) and add Step 11 documenting interactive MCP Inspector testing over SSE with a device-code Bearer header. (2026-08-04)
+
 ### Consumer Setup Tooling
 
 - [x] Add scripted plugin activation (`activate-plugin` via CI/CD API) to the bootstrap helper so consumers can enable ServiceNow plugins without the UI. (2026-07-31)
