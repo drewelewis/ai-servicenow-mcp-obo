@@ -300,6 +300,53 @@ def _is_placeholder_assertion(value: str) -> bool:
     return value.strip() in {"", "__SET_AT_RUNTIME__", "<set-at-runtime>", "placeholder"}
 
 
+def _acquire_by_device_code(app, scopes, purpose: str) -> Dict[str, Any]:
+    """Run the Entra device-code flow.
+
+    Prints the verification URL and code so the user can complete sign-in in any
+    browser they choose, instead of relying on MSAL to launch a system browser.
+    """
+    device_flow = app.initiate_device_flow(scopes=scopes)
+    if "user_code" not in device_flow:
+        raise ValueError(
+            f"Failed to initialize device-code flow for {purpose} token acquisition"
+        )
+    message = device_flow.get(
+        "message", "Open the verification URL and enter the device code."
+    )
+    print("\n" + message + "\n", flush=True)
+    return app.acquire_token_by_device_flow(device_flow)
+
+
+def _acquire_entra_user_token(
+    app,
+    *,
+    scopes,
+    login_hint,
+    use_device_code: bool,
+    allow_device_code_fallback: bool,
+    purpose: str,
+) -> Dict[str, Any]:
+    """Acquire an Entra user token for local testing.
+
+    Prefers the device-code flow (prints a URL + code for any browser) so the
+    helper does not depend on MSAL launching a system browser, which can crash on
+    some hosts. Set ``use_device_code=False`` to use MSAL interactive browser
+    sign-in instead, with an optional device-code fallback.
+    """
+    if use_device_code:
+        return _acquire_by_device_code(app, scopes, purpose)
+
+    result = app.acquire_token_interactive(
+        scopes=scopes,
+        login_hint=login_hint,
+        prompt="select_account",
+    )
+    if not result.get("access_token") and allow_device_code_fallback:
+        result = _acquire_by_device_code(app, scopes, purpose)
+    return result
+
+
 async def _maybe_acquire_obo_user_assertion(args: argparse.Namespace) -> None:
     """Acquire an Entra user token for local OBO testing when no assertion is provided.
 
@@ -328,24 +375,15 @@ async def _maybe_acquire_obo_user_assertion(args: argparse.Namespace) -> None:
 
     app = msal.PublicClientApplication(client_id=public_client_id, authority=authority)
 
-    result = app.acquire_token_interactive(
+    result = _acquire_entra_user_token(
+        app,
         scopes=[upstream_scope],
         login_hint=(args.obo_username or None),
-        prompt="select_account",
+        use_device_code=args.use_device_code,
+        allow_device_code_fallback=args.obo_allow_device_code_fallback,
+        purpose="OBO",
     )
-
     access_token = result.get("access_token")
-    if not access_token and args.obo_allow_device_code_fallback:
-        device_flow = app.initiate_device_flow(scopes=[upstream_scope])
-        if "user_code" not in device_flow:
-            raise ValueError(
-                "Failed to initialize device-code fallback flow for OBO assertion token acquisition"
-            )
-
-        message = device_flow.get("message", "Open the verification URL and enter the device code.")
-        print(message)
-        result = app.acquire_token_by_device_flow(device_flow)
-        access_token = result.get("access_token")
 
     if not access_token:
         error = result.get("error")
@@ -398,24 +436,15 @@ async def _maybe_acquire_sn_jwt_user_assertion(args: argparse.Namespace) -> None
 
     app = msal.PublicClientApplication(client_id=public_client_id, authority=authority)
 
-    result = app.acquire_token_interactive(
+    result = _acquire_entra_user_token(
+        app,
         scopes=[upstream_scope],
         login_hint=(args.sn_jwt_username or args.obo_username or None),
-        prompt="select_account",
+        use_device_code=args.use_device_code,
+        allow_device_code_fallback=args.obo_allow_device_code_fallback,
+        purpose="ServiceNow JWT",
     )
-
     access_token = result.get("access_token")
-    if not access_token and args.obo_allow_device_code_fallback:
-        device_flow = app.initiate_device_flow(scopes=[upstream_scope])
-        if "user_code" not in device_flow:
-            raise ValueError(
-                "Failed to initialize device-code fallback flow for ServiceNow JWT assertion token acquisition"
-            )
-
-        message = device_flow.get("message", "Open the verification URL and enter the device code.")
-        print(message)
-        result = app.acquire_token_by_device_flow(device_flow)
-        access_token = result.get("access_token")
 
     if not access_token:
         error = result.get("error")
@@ -535,6 +564,19 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=(os.environ.get("SERVICENOW_SN_JWT_ALLOW_STATIC_ASSERTION", "").lower() in {"1", "true", "yes"}),
         help="Allow static incoming user assertion fallback (local testing only)",
+    )
+    parser.add_argument(
+        "--use-device-code",
+        dest="use_device_code",
+        action="store_true",
+        default=(os.environ.get("SERVICENOW_USE_DEVICE_CODE", "true").lower() in {"1", "true", "yes"}),
+        help="Acquire the Entra user token via device-code flow: prints a verification URL + code so you can sign in with any browser (default: on). Avoids MSAL launching a system browser.",
+    )
+    parser.add_argument(
+        "--no-device-code",
+        dest="use_device_code",
+        action="store_false",
+        help="Use MSAL interactive browser sign-in instead of the device-code flow.",
     )
     parser.add_argument(
         "--list-commands",

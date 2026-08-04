@@ -293,15 +293,89 @@ user has that email, ServiceNow rejects the exchange with `invalid_grant` / `Use
 
 ### Step 8 (optional): Set up Entra delegated sign-in
 
-If you want on-behalf-of user sign-in through Entra, register the apps and merge the values:
+If you want on-behalf-of (OBO) user sign-in through Microsoft Entra, you do **not** create the
+app registrations by hand — [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1)
+provisions them for you with the Azure CLI. It is idempotent (existing apps are reused by
+display name, so re-running is safe) and creates the three registrations the OBO flow needs:
+
+| App (display name) | Role | `.env` values it fills |
+| --- | --- | --- |
+| `servicenow-mcp-obo-interactive-client` | Public client the user signs into (device-code / interactive). Configured as a fallback public client with `http://localhost` redirect. | `SERVICENOW_OBO_PUBLIC_CLIENT_ID` |
+| `servicenow-mcp-obo-broker` | Confidential middle-tier API that receives the user token and performs the OBO exchange. Exposes `user_impersonation`; holds the client secret. | `SERVICENOW_OBO_CLIENT_ID`, `SERVICENOW_OBO_CLIENT_SECRET`, `SERVICENOW_OBO_USER_SCOPE`, `SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID` |
+| `servicenow-mcp-obo-downstream-api` | Downstream API the broker calls on the user's behalf. Exposes `user_impersonation`. | `SERVICENOW_OBO_SCOPE` |
+
+Why three apps? OBO is a multi-hop delegation, and Entra requires each hop to be a distinct
+app with its own audience: the public client can't hold a secret, the broker must be a
+different audience than the client that requested the token (that is what makes the exchange
+an *on-behalf-of* exchange), and the downstream API is the resource the broker calls as the
+user. See [obo-flow-options.md](obo-flow-options.md) for the full comparison and diagrams.
+
+**Prerequisites**
+
+- Azure CLI installed and signed in (`az login`) to the tenant that will own the apps.
+- Your account can **create app registrations** and (ideally) **grant admin consent**. If it
+  cannot consent, the script continues and prints the `az ad app permission admin-consent`
+  command for a tenant admin to run.
+
+**Run it**
 
 ```powershell
 az login
+# Uses the signed-in tenant by default; pass -TenantId to target a specific tenant.
 .\scripts\bootstrap-entra-obo.ps1 -OutputEnvFile ".env.obo.generated"
 .\scripts\apply-obo-env.ps1 -SourceEnvFile ".env.obo.generated" -TargetEnvFile ".env"
 ```
 
-For a full comparison of the delegated-auth options and diagrams, see [obo-flow-options.md](obo-flow-options.md).
+What `bootstrap-entra-obo.ps1` does, in order:
+
+1. Ensures the three app registrations exist (creating any that are missing) and a service
+   principal for each.
+2. Marks the interactive client as a public client (`http://localhost` redirect).
+3. Exposes the `user_impersonation` scope (token version 2) on the broker and downstream apps
+   under their `api://<appId>` identifier URIs.
+4. Configures optional claims (`preferred_username`, `email`, `upn`) on the **broker** app for
+   both its access token and id token, so the token the MCP server validates carries the
+   delegated user's identity (`email`/`upn` appear only when also set on the user).
+5. Grants the delegated permissions for each hop (interactive client → broker, broker →
+   downstream) and attempts admin consent.
+6. Creates/rotates the broker client secret (`--append`, default 1-year lifetime).
+7. Writes the resulting `SERVICENOW_OBO_*` / `SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID` values to
+   the output env file, which `apply-obo-env.ps1` then merges into your `.env`.
+
+**Customization** — override any of these parameters when you run the script:
+`-TenantId`, `-BrokerAppName`, `-InteractiveClientAppName`, `-DownstreamApiAppName`,
+`-BrokerScopeName`, `-DownstreamScopeName`, `-SecretYears`, `-OutputEnvFile`.
+
+> Security note: the broker client secret is written only to the generated env file and then
+> your git-ignored `.env`. Do not commit either. Re-running the script rotates the secret
+> (append mode keeps older secrets valid until they expire).
+
+**Token claims (how identity flows to ServiceNow)**
+
+The whole delegated flow hinges on one thing: the claim in the Entra token that identifies the
+signed-in user, which the MCP server uses as the subject of the assertion it sends to
+ServiceNow. The tokens issued for this flow carry these claims:
+
+| Claim | Source | Always present? | Role in this integration |
+| --- | --- | --- | --- |
+| `preferred_username` | Default v2 claim (also requested explicitly in Step 8.4) | Yes | **The subject.** Default value of `SERVICENOW_SN_JWT_USER_CLAIM_SOURCE`; matched against the ServiceNow user field (default `email`). |
+| `email` | Optional claim (added in Step 8.4) | Only if the user has an email set in Entra | Alternative subject if you set `SERVICENOW_SN_JWT_USER_CLAIM_SOURCE=email`. |
+| `upn` | Optional claim (added in Step 8.4) | Only for managed (non-guest) users with a UPN | Alternative subject for on-prem-synced identities. |
+| `oid` | Default | Yes | Immutable Entra object ID; stable but not human-readable. |
+| `sub` | Default | Yes | Pairwise subject (per app); not portable across apps. |
+| `name`, `tid`, `aud` | Default | Yes | Display name, tenant, and audience (the broker app). |
+
+Key points:
+
+- The bootstrap script requests `preferred_username`, `email`, and `upn` as optional claims on
+  the broker app (Step 8.4), but Entra only emits `email`/`upn` when the user actually has those
+  attributes populated in the directory. Many cloud-only accounts have no `email` value, so that
+  claim can still come through empty — `preferred_username` is the reliable subject.
+- Whatever claim you choose via `SERVICENOW_SN_JWT_USER_CLAIM_SOURCE` must match the ServiceNow
+  user field configured on the OAuth record (`user_field`, default `email`). The two are
+  compared as exact strings. See Step 7b for creating the matching ServiceNow user.
+- Run `python scripts/smoke_test_sn_jwt.py --show-claims` (Step 9) to print the exact claim
+  values your tenant emits for a given user before you configure the ServiceNow mapping.
 
 ### Step 9: Check that it works
 
@@ -481,11 +555,24 @@ python scripts/interactive_mcp_client.py --list-commands
 
 This helper supports the same non-basic auth configuration patterns as the CLI (OBO, bearer token, or ServiceNow OAuth).
 
-For local OBO testing, if `SERVICENOW_OBO_USER_ASSERTION` is unset/placeholder, the helper can auto-acquire a user assertion token via interactive Entra sign-in (browser popup with MFA).
+For local testing, if the incoming user assertion is unset/placeholder the helper auto-acquires
+an Entra user token. By default it uses the **device-code flow**: it prints a verification URL
+and a code (for `https://microsoft.com/devicelogin`) so you can complete sign-in in **any
+browser you choose** — the helper does not launch a system browser. Sign in as the Entra user
+you mapped in Step 7b (a non-admin ServiceNow user).
 
+```text
+To sign in, use a web browser to open the page https://microsoft.com/devicelogin
+and enter the code XXXXXXXXX to authenticate.
+```
+
+Sign-in flags and settings:
+
+- `--use-device-code` (default on; also `SERVICENOW_USE_DEVICE_CODE=true`) — print a URL + code and let you use any browser.
+- `--no-device-code` — use MSAL interactive browser sign-in (system browser popup) instead of the device-code flow.
 - optional `SERVICENOW_OBO_PUBLIC_CLIENT_ID` (defaults to `SERVICENOW_OBO_CLIENT_ID`)
 - optional `SERVICENOW_OBO_USER_SCOPE` (defaults to `<SERVICENOW_OBO_CLIENT_ID>/.default` GUID-based scope)
-- optional `SERVICENOW_OBO_ALLOW_DEVICE_CODE_FALLBACK=true` to allow device-code flow when popup sign-in is unavailable
+- optional `SERVICENOW_OBO_ALLOW_DEVICE_CODE_FALLBACK=true` to fall back to device-code flow when `--no-device-code` browser sign-in is unavailable
 
 This simulates the incoming user bearer token a Teams-like client would normally pass to the MCP server.
 

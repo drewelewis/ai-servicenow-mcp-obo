@@ -38,6 +38,11 @@ This file tracks planned and in-progress work for general repository development
 - [x] Rename the provisioned entity to "MCP Entra to ServiceNow OBO" to reflect the integration intent (Entra→ServiceNow OBO via MCP) rather than the JWT-bearer mechanism. (2026-08-03)
 - [x] Document the missing step: the smoke test must be run as an Entra user whose `preferred_username` maps to a ServiceNow user's email (Step 7b rewrite + Step 9 note) to avoid `invalid_grant`/`User not found`. (2026-08-03)
 - [x] Warn in README Step 7b + troubleshooting that mapping to the `admin` user is rejected with `Grant access token to admin is not allowed`; require a dedicated non-admin user. (2026-08-03)
+- [x] Document in the README how the three Entra OBO app registrations are scripted for new users (`bootstrap-entra-obo.ps1`): roles, env-var mapping, prerequisites, what it configures, parameters, secret handling. (2026-08-03)
+- [x] Add optional claims (`preferred_username`, `email`, `upn`) to the broker app in `bootstrap-entra-obo.ps1` so the access token the MCP server validates explicitly carries the delegated user's identity; document in README Step 8. (2026-08-04)
+- [x] Add a Token claims reference subsection to README Step 8 (claims table + how the subject claim maps to the ServiceNow user_field). (2026-08-04)
+- [x] Change the interactive MCP test client to prefer the Entra device-code flow (print URL + code for any browser) instead of MSAL launching the system browser, which crashes on some hosts; add `--use-device-code`/`--no-device-code` flags. (2026-08-04)
+- [x] Update the README Interactive CLI Helper section to document the device-code default sign-in and the `--use-device-code`/`--no-device-code` flags. (2026-08-04)
 - [x] Add README Step 5 reset guidance (update instance URL/username/password after an instance reset) and a `--check-auth` preflight in `scripts/service_now_setup.py` to verify admin REST auth before setup. (2026-07-31)
 - [ ] When scripting Multiple Provider SSO property configuration in `service_now_setup.py`, keep `admin` basic auth working: enable multisso/auto-import but do NOT enable the Account Recovery lockout (it blocks REST basic auth even for the ACR user). Confirm exact `sys_properties` names against a live instance before hardcoding.
 

@@ -130,6 +130,40 @@ function Configure-ApiScope {
     return $scopeId
 }
 
+function Configure-OptionalClaims {
+    param(
+        [Parameter(Mandatory = $true)]$App,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    # Emit the delegated user's identity claims on both the access token (which the MCP
+    # server validates, aud = this app) and the id token. preferred_username is a default
+    # v2 claim; email/upn are only present when requested here (and when set on the user).
+    $claims = @(
+        @{ name = "preferred_username"; essential = $false; additionalProperties = @() },
+        @{ name = "email"; essential = $false; additionalProperties = @() },
+        @{ name = "upn"; essential = $false; additionalProperties = @() }
+    )
+
+    $patchBody = @{
+        optionalClaims = @{
+            idToken     = $claims
+            accessToken = $claims
+            saml2Token  = @()
+        }
+    } | ConvertTo-Json -Depth 10 -Compress
+
+    $tempBodyPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("servicenow-mcp-claims-patch-" + [Guid]::NewGuid().ToString() + ".json")
+    Set-Content -Path $tempBodyPath -Value $patchBody -Encoding UTF8
+
+    try {
+        Write-Host "Configuring optional claims (preferred_username, email, upn) on $Label"
+        az rest --method PATCH --uri "https://graph.microsoft.com/v1.0/applications/$($App.id)" --headers "Content-Type=application/json" --body "@$tempBodyPath" --output none
+    } finally {
+        Remove-Item -Path $tempBodyPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Grant-DelegatedPermission {
     param(
         [Parameter(Mandatory = $true)][string]$ClientAppId,
@@ -200,6 +234,8 @@ if ([string]::IsNullOrWhiteSpace($DownstreamIdentifierUri)) {
 
 $brokerScopeId = Configure-ApiScope -App $brokerApp -IdentifierUri $BrokerIdentifierUri -ScopeName $BrokerScopeName
 $downstreamScopeId = Configure-ApiScope -App $downstreamApp -IdentifierUri $DownstreamIdentifierUri -ScopeName $DownstreamScopeName
+
+Configure-OptionalClaims -App $brokerApp -Label "broker app"
 
 Grant-DelegatedPermission -ClientAppId $brokerApp.appId -ResourceAppId $downstreamApp.appId -ScopeId $downstreamScopeId -ScopeName $DownstreamScopeName -ClientLabel "broker app"
 Grant-DelegatedPermission -ClientAppId $interactiveClientApp.appId -ResourceAppId $brokerApp.appId -ScopeId $brokerScopeId -ScopeName $BrokerScopeName -ClientLabel "interactive client app"
