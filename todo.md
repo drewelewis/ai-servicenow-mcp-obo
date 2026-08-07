@@ -15,6 +15,15 @@ This file tracks planned and in-progress work for general repository development
 - [ ] Review and improve test coverage for non-OBO modules.
 - [ ] Track cross-feature technical debt items.
 
+### Azure Deployment
+
+- [x] Scaffold azd + Bicep deployment for Azure Container Apps (Dockerfile, `.dockerignore`, `azure.yaml`, `infra/` Bicep with UAMI, ACR, Key Vault, Container Apps env + app; external ingress; JWT-bearer only; secrets via Key Vault). Validated with `az bicep build`. (2026-08-04)
+- [x] Run `azure-validate` then `azure-deploy` (`azd up`) after setting required `azd env` values (instance URL, tenant/client IDs, JWKS URL, base64 PEM signing key). Deployed live to `rg-servicenow-mcp` (eastus2); endpoint `https://ca-mcp-y3p3ykro4eike.livelybeach-c4bb66ba.eastus2.azurecontainerapps.io` returns HTTP 200 `text/event-stream`; revision Running/Healthy. (2026-08-05)
+- [x] Add private networking (VNet + Key Vault private endpoint + private DNS + VNet-integrated Container Apps env) so the UAMI can read Key Vault secrets despite policy-enforced `publicNetworkAccess: Disabled`; pin `mcp==1.26.0`; bind FastMCP to `0.0.0.0`; use ACR `remoteBuild`; exclude `*.log` from build context. (2026-08-05)
+- [x] Document the Azure Container Apps deployment in the README (deployment details + a Mermaid logical design diagram of all pieces). (2026-08-05)
+- [x] Rename `scripts/smoke_test_sn_jwt.py` to `scripts/login.py` and make token claims print by default (drop the `--show-claims` switch); update README references. (2026-08-05)
+- [ ] Optional: harden the public MCP endpoint (network restriction / front door); `tools/list` over SSE is currently unauthenticated.
+
 ### MCP Server Tools
 
 - [x] Register `list_incidents` as an MCP tool (was resource-only) so it appears in the Inspector Tools tab and returns most-recent incidents for the delegated user. (2026-08-04)

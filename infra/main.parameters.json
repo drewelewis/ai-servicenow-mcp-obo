@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "${AZURE_ENV_NAME}"
+    },
+    "location": {
+      "value": "${AZURE_LOCATION}"
+    },
+    "serviceNowInstanceUrl": {
+      "value": "${SERVICENOW_INSTANCE_URL}"
+    },
+    "snJwtTenantId": {
+      "value": "${SERVICENOW_SN_JWT_TENANT_ID}"
+    },
+    "snJwtUpstreamClientId": {
+      "value": "${SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID}"
+    },
+    "snJwtClientId": {
+      "value": "${SERVICENOW_SN_JWT_CLIENT_ID}"
+    },
+    "snJwtTokenEndpoint": {
+      "value": "${SERVICENOW_SN_JWT_TOKEN_ENDPOINT}"
+    },
+    "snJwtJwksUrl": {
+      "value": "${SERVICENOW_SN_JWT_JWKS_URL}"
+    },
+    "snJwtUserClaimSource": {
+      "value": "${SERVICENOW_SN_JWT_USER_CLAIM_SOURCE=preferred_username}"
+    },
+    "snJwtPrivateKeyBase64": {
+      "value": "${SERVICENOW_SN_JWT_PRIVATE_KEY_BASE64}"
+    },
+    "snJwtClientSecret": {
+      "value": "${SERVICENOW_SN_JWT_CLIENT_SECRET}"
+    }
+  }
+}

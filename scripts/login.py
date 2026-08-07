@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Repeatable smoke test for ServiceNow JWT bearer delegated auth.
+"""Delegated login helper for the ServiceNow JWT bearer flow.
 
 Flow:
-1) Acquire Entra user token using device code.
+1) Sign in as an Entra user via device code and print the token claims.
 2) Build ServiceNow JWT bearer auth using local env values.
-3) Call incident list endpoint through ServiceNowMCP.
+3) Verify the login by calling the incident list endpoint through ServiceNowMCP.
 """
 
 from __future__ import annotations
@@ -115,9 +115,8 @@ async def _run_smoke(cfg: Dict[str, str], access_token: str) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Smoke test ServiceNow JWT bearer delegated flow")
+    parser = argparse.ArgumentParser(description="Delegated login for the ServiceNow JWT bearer flow")
     parser.add_argument("--env-file", default=".env", help="Path to env file")
-    parser.add_argument("--show-claims", action="store_true", help="Print selected user-token claims")
     args = parser.parse_args()
 
     cfg = {k: (v or "") for k, v in dotenv_values(args.env_file).items()}
@@ -129,8 +128,10 @@ def main() -> int:
         raise SystemExit("Missing SERVICENOW_OBO_PUBLIC_CLIENT_ID or SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID")
 
     access_token = _acquire_device_token(tenant_id=tenant_id, public_client_id=public_client_id, scope=scope)
-    if args.show_claims:
-        _dump_claims(access_token)
+    _dump_claims(access_token)
+
+    print("\nAccess token:")
+    print(access_token)
 
     return int(asyncio.run(_run_smoke(cfg, access_token)))
 

@@ -932,11 +932,19 @@ class ServiceNowMCP:
                 auth: Authentication,
                 name: str = "ServiceNow MCP"):
         self.client = ServiceNowClient(instance_url, auth)
-        self.mcp = FastMCP(name, dependencies=[
-            "requests",
-            "httpx", 
-            "pydantic"
-        ])
+        # Bind host/port explicitly so remote (SSE) hosting can listen on all
+        # interfaces. Defaults preserve local behaviour (127.0.0.1:8000); the
+        # container image sets FASTMCP_HOST=0.0.0.0 so ingress can reach it.
+        self.mcp = FastMCP(
+            name,
+            host=os.environ.get("FASTMCP_HOST", "127.0.0.1"),
+            port=int(os.environ.get("FASTMCP_PORT", "8000")),
+            dependencies=[
+                "requests",
+                "httpx",
+                "pydantic",
+            ],
+        )
         
         # Register resources
         self.mcp.resource("servicenow://incidents/{number}")(self.get_incident)

@@ -250,12 +250,12 @@ someone who has never used ServiceNow before.
    `__SET_FROM_SERVICENOW_UI__` placeholder with the copied secret. Save the file. Type the
    value directly — do not paste it into chat or commit it (`.env` is git-ignored).
 
-   *Note:* some JWT-bearer configurations do not require a client secret. If the smoke test in
+   *Note:* some JWT-bearer configurations do not require a client secret. If the login check in
    Step 9 succeeds while the placeholder is still present, you can leave that line as-is.
 
 **7b. Make sure the Entra user you sign in as also exists in ServiceNow**
 
-This integration is delegated: when you run the smoke test (Step 9) or use the MCP server,
+This integration is delegated: when you run the login helper (Step 9) or use the MCP server,
 you sign in as a **real Microsoft Entra user**, and the flow acts in ServiceNow *as that same
 person*. ServiceNow finds the matching account by comparing the Entra token's
 `SERVICENOW_SN_JWT_USER_CLAIM_SOURCE` claim (default `preferred_username`, i.e. the user's
@@ -263,11 +263,11 @@ email / UPN) against the ServiceNow user field configured on the OAuth record (d
 `email`). The two directories must therefore contain the **same identity**. If no ServiceNow
 user has that email, ServiceNow rejects the exchange with `invalid_grant` / `User not found`.
 
-1. Find the exact Entra identity you will sign in as. The reliable way is to run the smoke
-   test once and read the claim it prints:
+1. Find the exact Entra identity you will sign in as. The reliable way is to run the login
+   helper once and read the claim it prints:
 
    ```bash
-   python scripts/smoke_test_sn_jwt.py --show-claims
+   python scripts/login.py
    ```
 
    In the `User token claims` block, copy the `preferred_username` value
@@ -291,7 +291,7 @@ user has that email, ServiceNow rejects the exchange with `invalid_grant` / `Use
    > non-privileged user with only the role(s) it needs. If you previously set the target
    > email on the `admin` user, clear it first (emails must be unique) and move it to the
    > dedicated user.
-4. Re-run the smoke test in Step 9; the `User not found` error should be gone.
+4. Re-run the login helper in Step 9; the `User not found` error should be gone.
 
 > Tip: sign in at the device-code prompt as the *same* Entra user whose email you mapped
 > here. Signing in as a different Entra user will again fail with `User not found` unless that
@@ -380,13 +380,13 @@ Key points:
 - Whatever claim you choose via `SERVICENOW_SN_JWT_USER_CLAIM_SOURCE` must match the ServiceNow
   user field configured on the OAuth record (`user_field`, default `email`). The two are
   compared as exact strings. See Step 7b for creating the matching ServiceNow user.
-- Run `python scripts/smoke_test_sn_jwt.py --show-claims` (Step 9) to print the exact claim
+- Run `python scripts/login.py` (Step 9) to print the exact claim
   values your tenant emits for a given user before you configure the ServiceNow mapping.
 
 ### Step 9: Check that it works
 
 ```bash
-python scripts/smoke_test_sn_jwt.py --show-claims
+python scripts/login.py
 ```
 
 At the device-code prompt, sign in as the **Entra user you mapped in Step 7b** (the one whose
@@ -408,7 +408,7 @@ _start_mcp_server.bat
 
 ### Step 11: Try it interactively with MCP Inspector (delegated tool calls)
 
-Once the smoke test passes you can exercise the real delegated path by hand using the
+Once the login check passes you can exercise the real delegated path by hand using the
 [MCP Inspector](https://github.com/modelcontextprotocol/inspector). Because delegated
 identity travels on the request's `Authorization` header, use the **SSE** transport (stdio
 is a pipe and carries no HTTP headers, so it can list tools but cannot make delegated
@@ -422,15 +422,18 @@ calls).
 
    It listens on `http://127.0.0.1:8000` and serves the stream at `/sse`.
 
-2. **Acquire a user token** for the broker audience via device-code sign-in and copy it to
-   your clipboard (never paste tokens into chat). On Windows PowerShell:
+2. **Acquire a user token** for the broker audience via device-code sign-in. The command
+   below copies the token to your clipboard **and** prints it to the terminal so you can
+   copy it again later (never paste tokens into chat). On Windows PowerShell:
 
    ```powershell
-   python -c "import msal,os,sys; from dotenv import load_dotenv; load_dotenv(); t=os.environ['SERVICENOW_SN_JWT_TENANT_ID']; pc=os.environ.get('SERVICENOW_OBO_PUBLIC_CLIENT_ID') or os.environ['SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID']; up=os.environ['SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID']; app=msal.PublicClientApplication(pc, authority='https://login.microsoftonline.com/'+t); f=app.initiate_device_flow(scopes=[up+'/.default']); print(f['message'], file=sys.stderr); r=app.acquire_token_by_device_flow(f); sys.stdout.write(r.get('access_token') or ('ERROR: '+str(r.get('error_description'))))" | Set-Clipboard
+   python -c "import msal,os,sys; from dotenv import load_dotenv; load_dotenv(); t=os.environ['SERVICENOW_SN_JWT_TENANT_ID']; pc=os.environ.get('SERVICENOW_OBO_PUBLIC_CLIENT_ID') or os.environ['SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID']; up=os.environ['SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID']; app=msal.PublicClientApplication(pc, authority='https://login.microsoftonline.com/'+t); f=app.initiate_device_flow(scopes=[up+'/.default']); print(f['message'], file=sys.stderr); r=app.acquire_token_by_device_flow(f); sys.stdout.write(r.get('access_token') or ('ERROR: '+str(r.get('error_description'))))" | Tee-Object -Variable userToken | Set-Clipboard; $userToken
    ```
 
-   Open the printed URL, enter the code, and sign in as the **Entra user you mapped in
-   Step 7b**. The token is short-lived (~1 hour) — re-run this to refresh it.
+   `Tee-Object` passes the token to `Set-Clipboard` and also stores it in `$userToken`,
+   which the trailing `$userToken` prints to the terminal for later reuse. Open the printed
+   URL, enter the code, and sign in as the **Entra user you mapped in Step 7b**. The token
+   is short-lived (~1 hour) — re-run this to refresh it.
 
 3. **Launch the Inspector in writable mode** (no preset server, so you can add an SSE
    connection with a custom header):
@@ -633,23 +636,23 @@ Sign-in flags and settings:
 
 This simulates the incoming user bearer token a Teams-like client would normally pass to the MCP server.
 
-### Repeatable ServiceNow JWT Smoke Test
+### Repeatable ServiceNow JWT Login Check
 
-Use the dedicated smoke test script to validate the complete delegated JWT bearer path end-to-end with one command.
+Use the dedicated login helper to sign in and validate the complete delegated JWT bearer path end-to-end with one command.
 
 Script path:
 
-- `scripts/smoke_test_sn_jwt.py`
+- `scripts/login.py`
 
 Run:
 
 ```bash
-python scripts/smoke_test_sn_jwt.py --show-claims
+python scripts/login.py
 ```
 
 What it verifies:
 
-1. Device-code sign-in and Entra user token acquisition.
+1. Device-code sign-in and Entra user token acquisition (prints the token claims).
 2. ServiceNow oauth_token.do JWT bearer exchange.
 3. ServiceNow incident table query through MCP server auth path.
 
@@ -1122,6 +1125,232 @@ Notes:
 - OBO uses request-bound bearer assertions by default and fails closed when assertion is missing.
 - `SERVICENOW_OBO_ALLOW_STATIC_ASSERTION=true` is intended for local testing only.
 - The downstream API represented by `SERVICENOW_OBO_SCOPE` must trust your Entra app and accept delegated tokens.
+
+## Deploying to Azure (Container Apps)
+
+The server can run locally for development or be hosted on **Azure Container Apps** for
+remote MCP hosts. The Azure deployment uses the **Azure Developer CLI (`azd`)** with
+Bicep infrastructure under [infra/](infra/), and runs the server over the **SSE**
+transport behind external HTTPS ingress. Delegated identity still flows per request:
+the MCP host presents the user's Entra bearer token on each `tools/call`, and the server
+performs the ServiceNow JWT-bearer exchange as that user.
+
+### Logical design
+
+```mermaid
+flowchart TB
+    subgraph Client["Client / Identity"]
+        Host["MCP host / client"]
+        Entra["Microsoft Entra ID<br/>(user sign-in, OBO / token validation)"]
+    end
+
+    subgraph SN["ServiceNow"]
+        SNInstance["ServiceNow instance<br/>oauth_token.do + Table API"]
+    end
+
+    subgraph RG["Azure resource group: rg-servicenow-mcp (eastus2)"]
+        direction TB
+        subgraph VNet["Virtual network (vnet-*)"]
+            direction TB
+            subgraph ACASubnet["snet-aca (/23, delegated)"]
+                ACAEnv["Container Apps environment<br/>(VNet-integrated)"]
+                App["Container App: ca-mcp-*<br/>SSE server, ingress 443 to 8000"]
+            end
+            subgraph PESubnet["snet-pep (/24)"]
+                KVPE["Key Vault private endpoint<br/>pe-kv-*"]
+            end
+        end
+        KV["Key Vault: kv-*<br/>publicNetworkAccess = Disabled<br/>secrets: sn-jwt-private-key, sn-jwt-client-secret"]
+        ACR["Container Registry: acr*"]
+        UAMI["User-assigned managed identity: id-*<br/>AcrPull + Key Vault Secrets User"]
+        Logs["Log Analytics: log-*"]
+        DNS["Private DNS zone<br/>privatelink.vaultcore.azure.net"]
+    end
+
+    Host -- "1. user signs in" --> Entra
+    Host -- "2. HTTPS SSE + Bearer token" --> App
+    App -- "3. validate token / OBO" --> Entra
+    App -- "4. JWT-bearer assertion (as user)" --> SNInstance
+    App -- "5. REST Table API (as user)" --> SNInstance
+
+    App -. "uses" .-> UAMI
+    UAMI -- "AcrPull" --> ACR
+    UAMI -- "Key Vault Secrets User" --> KV
+    App -- "pull image" --> ACR
+    App -- "read secret refs" --> KVPE
+    KVPE -- "private link" --> KV
+    DNS -. "resolves" .-> KVPE
+    App -- "stdout / stderr" --> Logs
+    ACAEnv --- App
+```
+
+**How the pieces fit together**
+
+- **MCP host → Container App**: the host connects to the SSE endpoint over HTTPS and
+  sends the signed-in user's Entra bearer token on each `tools/call`.
+- **Container App → Entra / ServiceNow**: the server validates the incoming token, then
+  mints a short-lived JWT assertion carrying the user's identity to obtain a ServiceNow
+  access token, and calls ServiceNow as that user.
+- **Managed identity**: the Container App runs as a user-assigned managed identity that
+  holds `AcrPull` (to pull the image) and `Key Vault Secrets User` (to read secrets) —
+  no registry or vault credentials are stored in the app.
+- **Private networking**: Key Vault has `publicNetworkAccess` disabled (enforced by
+  subscription policy). The Container Apps environment is VNet-integrated and reaches the
+  vault over a **private endpoint** resolved through a private DNS zone, so the signing
+  key and client secret never traverse the public internet.
+- **Secrets vs. config**: the base64 signing key and optional client secret are stored in
+  Key Vault and injected as Container App secret references; non-sensitive ServiceNow
+  configuration is passed as plain environment variables.
+
+### Request flow (per tool call)
+
+The sequence below shows a single delegated `tools/call` once the server is running on
+Container Apps. The user's identity is carried on every call; the server never stores
+static ServiceNow user credentials.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant Host as MCP host / client
+    participant Entra as Microsoft Entra ID
+    participant App as Container App (SSE server)
+    participant KV as Key Vault (private endpoint)
+    participant SN as ServiceNow
+
+    U->>Host: Sign in
+    Host->>Entra: Acquire user access token
+    Entra-->>Host: User bearer token
+    Host->>App: tools/call over HTTPS (Authorization: Bearer)
+    App->>App: Validate token (issuer / audience)
+    App->>KV: Read sn-jwt-private-key (via managed identity)
+    KV-->>App: Signing key (private link)
+    App->>App: Build signed JWT assertion for the user
+    App->>SN: JWT-bearer exchange at oauth_token.do
+    SN-->>App: ServiceNow access token (as user)
+    App->>SN: Table API call (as user)
+    SN-->>App: Records the user is allowed to see
+    App-->>Host: Tool result
+    Host-->>U: Response
+```
+
+> The signing key is read from Key Vault at startup and cached in memory, so the vault
+> round-trip does not occur on every request; it is shown here to make the trust chain
+> explicit.
+
+### Azure resources created
+
+| Resource | Name pattern | Purpose |
+| --- | --- | --- |
+| Resource group | `rg-servicenow-mcp` | Container for all deployment resources |
+| User-assigned managed identity | `id-*` | App identity; `AcrPull` + `Key Vault Secrets User` |
+| Log Analytics workspace | `log-*` | Container Apps logs |
+| Container Registry | `acr*` | Hosts the built server image (admin/anonymous pull disabled) |
+| Key Vault | `kv-*` | JWT signing key + optional client secret (private endpoint only) |
+| Virtual network | `vnet-*` | `snet-aca` (delegated) + `snet-pep` (private endpoints) |
+| Key Vault private endpoint + private DNS | `pe-kv-*` | Private data-plane access to Key Vault |
+| Container Apps environment | `cae-*` | VNet-integrated hosting environment |
+| Container App | `ca-mcp-*` | The MCP server (SSE, external HTTPS ingress) |
+
+### Prerequisites for deployment
+
+- [Azure Developer CLI (`azd`)](https://aka.ms/azd) and the Azure CLI (`az`), signed in.
+- An Azure subscription and permission to create the resources above.
+- Docker is **not** required locally — the image is built remotely in ACR
+  (`remoteBuild: true` in [azure.yaml](azure.yaml)).
+
+### Deploy
+
+Set the required values on the `azd` environment (mapped to Bicep in
+[infra/main.parameters.json](infra/main.parameters.json)), then provision and deploy:
+
+```bash
+azd env new servicenow-mcp
+azd env set SERVICENOW_INSTANCE_URL "https://dev123456.service-now.com/"
+azd env set SERVICENOW_SN_JWT_TENANT_ID "<entra-tenant-id>"
+azd env set SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID "<expected-audience-client-id>"
+azd env set SERVICENOW_SN_JWT_CLIENT_ID "<servicenow-oauth-jwt-client-id>"
+azd env set SERVICENOW_SN_JWT_TOKEN_ENDPOINT "https://dev123456.service-now.com/oauth_token.do"
+azd env set SERVICENOW_SN_JWT_JWKS_URL "<public-jwks-url>"
+
+# Secret material — set without echoing it into shell history where possible.
+azd env set SERVICENOW_SN_JWT_PRIVATE_KEY_BASE64 "<base64-encoded-PEM>"
+azd env set SERVICENOW_SN_JWT_CLIENT_SECRET "<servicenow-client-secret>"
+
+azd up
+```
+
+`azd up` provisions the infrastructure, builds the image in ACR, and deploys the
+Container App. On success it prints the service endpoint (the `SERVICE_MCP_URI` output);
+the MCP SSE URL is that endpoint with `/sse` appended.
+
+> **Security note:** the SSE endpoint is publicly reachable and `tools/list` over SSE is
+> currently unauthenticated; actual tool **calls** require a valid delegated bearer token.
+> Restricting the endpoint (ingress IP allow-list, platform auth, or a fronting gateway)
+> is tracked as a follow-up in [todo.md](todo.md).
+
+### Testing the deployed server
+
+Test the Azure-hosted server in three stages: reachability, an authenticated tool call,
+and logs.
+
+**1. Get the endpoint URL**
+
+```powershell
+azd env get-values | Select-String SERVICE_MCP_URI
+```
+
+The MCP SSE URL is that value with `/sse` appended (for example
+`https://ca-mcp-<token>.<region>.azurecontainerapps.io/sse`).
+
+**2. Reachability probe (no auth)**
+
+The SSE stream itself is not gated, so a quick probe confirms ingress and that the app is
+running. Use `curl.exe` with a timeout — the stream stays open, so `Invoke-WebRequest`
+would hang:
+
+```powershell
+curl.exe -N --max-time 5 -i "https://ca-mcp-<token>.<region>.azurecontainerapps.io/sse"
+```
+
+Expect `HTTP/1.1 200 OK`, `content-type: text/event-stream`, and an `event: endpoint`
+line.
+
+**3. Authenticated end-to-end (delegated tool call)**
+
+Tool calls require the user's Entra bearer token, so point **MCP Inspector** at the remote
+SSE URL and attach the token as a header:
+
+```powershell
+npx -y @modelcontextprotocol/inspector
+```
+
+In the Inspector UI:
+
+- **Transport Type**: `SSE`
+- **URL**: the `/sse` endpoint above
+- **Authentication → Header Name**: `Authorization`, **Value**: `Bearer <user-access-token>`
+- Click **Connect**, then **List Tools**, then run a tool such as `list_incidents`.
+
+To obtain `<user-access-token>`, use the same device-code sign-in shown in
+[Step 11](#step-11-try-it-interactively-with-mcp-inspector-delegated-tool-calls), which
+copies the token straight to your clipboard (never paste tokens into chat). The only
+difference for the deployed server is the Inspector **URL** — point it at the remote
+`/sse` endpoint instead of `http://127.0.0.1:8000/sse`.
+
+> [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py) and the login helper
+> exercise the ServiceNow JWT-bearer path **directly** (not through the remote SSE server),
+> so they validate auth and configuration but not the deployed ingress. MCP Inspector
+> against the `/sse` URL is what tests the Azure-hosted server end-to-end.
+
+**4. Check server logs**
+
+```powershell
+az containerapp logs show -n ca-mcp-<token> -g rg-servicenow-mcp --follow --tail 50
+```
+
+Watch for token validation, the Key Vault signing-key read at startup, and the ServiceNow
+exchange. For historical queries, use the Log Analytics workspace `log-<token>`.
 
 ## Development
 
