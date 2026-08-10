@@ -1,3 +1,31 @@
+## 2026-08-10
+
+### Added
+- Added an azd `preprovision` hook that makes `azd up` provision/reuse the broker, interactive, downstream, and Copilot Studio Entra registrations before Bicep evaluation; the hook synchronizes generated tenant/app/scope/secret values into the active azd environment: [azure.yaml](azure.yaml), [scripts/azd-preprovision.js](scripts/azd-preprovision.js), [scripts/azd-preprovision.ps1](scripts/azd-preprovision.ps1), [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1).
+- Added focused regression coverage for azd hook wiring and Copilot Studio client provisioning: [tests/test_azd_entra_hook.py](tests/test_azd_entra_hook.py).
+
+### Changed
+- Consolidated all generated ServiceNow JWT, Entra OBO, and Copilot Studio OAuth settings into the single git-ignored root `.env`; setup paths now upsert values while preserving unrelated settings, and obsolete `servicenow-jwt-bootstrap.env`, `.env.obo.generated`, nested `scripts/.env`, and merge-helper workflows were removed: [scripts/service_now_setup.py](scripts/service_now_setup.py), [scripts/bootstrap_servicenow_jwt.py](scripts/bootstrap_servicenow_jwt.py), [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [.env.example](.env.example), [README.md](README.md), [tests/test_azd_entra_hook.py](tests/test_azd_entra_hook.py).
+- Corrected the Entra architecture documentation to explain why all four registrations are provisioned, identify the broker/Copilot Studio production pair versus local-test and optional direct-OBO apps, and align secret-handling guidance with idempotent azd reuse: [README.md](README.md).
+- Extended Entra bootstrap automation with a dedicated Copilot Studio confidential client, delegated broker permission, optional callback URI registration, idempotent permission checks, explicit secret rotation, and secret reuse by default in azd environments: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1).
+- Updated Azure deployment and Copilot Studio guidance so `azd up` owns Entra provisioning and the Copilot-generated callback URI is applied through `COPILOT_STUDIO_REDIRECT_URI`: [README.md](README.md), [.azure/deployment-plan.md](.azure/deployment-plan.md).
+- Completed and verified a full `azd up` lifecycle with Entra reconciliation, ARM provisioning, remote image build, and Container App deployment; revision `ca-mcp-y3p3ykro4eike--azd-1786403010` is Running/Healthy and `/mcp` returns a valid JSON-RPC initialization response with HTTP 200: [azure.yaml](azure.yaml), [scripts/azd-preprovision.js](scripts/azd-preprovision.js), [scripts/azd-preprovision.ps1](scripts/azd-preprovision.ps1), [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [pyproject.toml](pyproject.toml).
+- Redeployed the Streamable HTTP code changes to the existing Azure Container App with `azd deploy mcp` (no infrastructure provisioning); revision `ca-mcp-y3p3ykro4eike--azd-1786368276` is Running/Healthy and a JSON-RPC `initialize` request to `/mcp` returns HTTP 200: [Dockerfile](Dockerfile), [mcp_server_servicenow/cli.py](mcp_server_servicenow/cli.py), [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).
+- Changed the Windows MCP Inspector launcher to open a writable session with no preset STDIO server, allowing local or deployed Streamable HTTP `/mcp` connections and custom authorization headers; updated its quick-start guidance: [_start_mcp_explorer.bat](_start_mcp_explorer.bat), [README.md](README.md).
+
+### Security
+- Generated confidential-client secrets are written only to the active azd environment and the repository's git-ignored root `.env`; bootstrap commands no longer print secret-bearing env blocks or create secondary env files: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [scripts/bootstrap_servicenow_jwt.py](scripts/bootstrap_servicenow_jwt.py).
+
+## 2026-08-08
+
+### Added
+- Added regression coverage for Streamable HTTP CLI selection and the deployed container command: [tests/test_streamable_http.py](tests/test_streamable_http.py).
+- Added Copilot Studio connection guidance using OAuth 2.0 and the Streamable HTTP `/mcp` endpoint: [README.md](README.md).
+
+### Changed
+- Enabled `streamable-http` as a CLI transport and made it the Azure container's default remote transport while retaining stdio and legacy SSE compatibility: [mcp_server_servicenow/cli.py](mcp_server_servicenow/cli.py), [Dockerfile](Dockerfile).
+- Updated local Inspector, Azure architecture, deployment, reachability, and authenticated test guidance from SSE `/sse` to Streamable HTTP `/mcp`: [README.md](README.md), [.azure/deployment-plan.md](.azure/deployment-plan.md).
+
 ## 2026-08-05
 
 ### Added
@@ -98,6 +126,10 @@
 - Added a prominent README production-path section that clarifies the MCP + OBO runtime flow and explicitly distinguishes `_start_mcp_server.bat` (production MCP server entrypoint) from `_start_obo.bat` (interactive local test helper): [README.md](README.md).
 
 ### Fixed
+- Anchored preprovision `.env` synchronization to the repository root instead of azd's `scripts/` hook working directory, and removed the unintended `scripts/.env` duplicate in [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1).
+- Kept single-line root `.env` input array-shaped in PowerShell 5.1 so strict-mode preprovision synchronization can safely use collection operations in [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1).
+- Hardened delegated-permission reconciliation against incomplete Microsoft Graph `requiredResourceAccess` entries under PowerShell strict mode in [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1).
+- Fixed `azd up` preprovision preparation by replacing the Python hook wrapper (which made azd attempt to install the whole repository) with a dependency-free Node launcher, and constrained setuptools discovery to `mcp_server_servicenow*` so `infra/` is never misidentified as a Python package: [azure.yaml](azure.yaml), [scripts/azd-preprovision.js](scripts/azd-preprovision.js), [pyproject.toml](pyproject.toml), [tests/test_azd_entra_hook.py](tests/test_azd_entra_hook.py).
 - Unified request-scoped bearer-token extraction/binding for both Entra OBO and ServiceNow JWT bearer delegated auth paths so incoming identity context is consistently required for delegated calls: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py).
 - Fixed the env merge helper so dry-run mode no longer creates backups and the conditional logic parses correctly in PowerShell: [scripts/apply-obo-env.ps1](scripts/apply-obo-env.ps1).
 - Fixed Azure bootstrap Graph PATCH body handling for PowerShell and made delegated scope configuration idempotent so rerunning the bootstrap no longer fails on enabled existing scopes: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1).

@@ -22,13 +22,11 @@ ENV/
 
 # Environment variables
 .env
-.env.obo.generated
 .env.bak-*
 .env.bak-manual-*
 .servicenow-jwt/*
 !.servicenow-jwt/jwks.json
 .servicenow-jwt/payloads/
-servicenow-jwt-bootstrap.env
 
 # Logs
 *.log

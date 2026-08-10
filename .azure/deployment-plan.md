@@ -22,8 +22,8 @@ remotely reachable HTTP (SSE) endpoint.
 
 - Language/runtime: Python (>= 3.10 required by `mcp`; container will use 3.11)
 - Framework: FastMCP (`mcp` package)
-- Entrypoint (remote): `python -m mcp_server_servicenow.cli --transport sse`
-- Transport: SSE (HTTP) — required for remote hosting; stdio is local-only
+- Entrypoint (remote): `python -m mcp_server_servicenow.cli --transport streamable-http`
+- Transport: Streamable HTTP at `/mcp`; stdio is local-only and legacy SSE remains available for compatibility
 - Listen binding: must bind `0.0.0.0` and platform port via `FASTMCP_HOST` / `FASTMCP_PORT`
 - Dependencies: `mcp`, `httpx`, `requests`, `PyJWT[crypto]`, `pydantic`, `python-dotenv`, `msal`
 - Public dependency: JWKS already published (GitHub raw) — no change
@@ -32,7 +32,7 @@ remotely reachable HTTP (SSE) endpoint.
 
 | Component | Azure service | Notes |
 |-----------|---------------|-------|
-| MCP server (SSE) | Azure Container Apps | External HTTPS ingress on the app port |
+| MCP server (Streamable HTTP) | Azure Container Apps | External HTTPS ingress on the app port |
 | Container image | Azure Container Registry | Built and pushed by `azd` |
 | Secrets | Azure Key Vault | ServiceNow creds, Entra broker secret, SN JWT client secret, RSA private key (PEM) |
 | Identity | User-assigned managed identity | ACR pull + Key Vault secret get |
@@ -67,6 +67,7 @@ Secrets (Key Vault → Container App secret refs):
 
 - `Dockerfile` (Python 3.11 slim, non-root, runs SSE entrypoint)
 - `azure.yaml` (azd service definition)
+- `scripts/azd-preprovision.py` / `scripts/azd-preprovision.ps1` (idempotent Entra app provisioning hook)
 - `infra/` Bicep: Container Apps env, Container App, ACR, Key Vault, managed identity, Log Analytics
 - `.dockerignore`
 
@@ -88,9 +89,12 @@ Bicep validated with `az bicep build` (BICEP_BUILD_OK).
 ## 10. Required azd Environment Values (set before deploy)
 
 Non-secret (`azd env set <NAME> <value>`):
-- `SERVICENOW_INSTANCE_URL`, `SERVICENOW_SN_JWT_TENANT_ID`, `SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID`,
-  `SERVICENOW_SN_JWT_CLIENT_ID`, `SERVICENOW_SN_JWT_TOKEN_ENDPOINT`, `SERVICENOW_SN_JWT_JWKS_URL`,
+- `SERVICENOW_INSTANCE_URL`, `SERVICENOW_SN_JWT_CLIENT_ID`, `SERVICENOW_SN_JWT_TOKEN_ENDPOINT`, `SERVICENOW_SN_JWT_JWKS_URL`,
   `SERVICENOW_SN_JWT_USER_CLAIM_SOURCE` (optional; defaults to `preferred_username`)
+
+The preprovision hook derives and stores `SERVICENOW_SN_JWT_TENANT_ID`,
+`SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID`, and `COPILOT_STUDIO_*` values in the active azd
+environment before Bicep parameter evaluation.
 
 Secrets (stored in Key Vault by the deployment):
 - `SERVICENOW_SN_JWT_PRIVATE_KEY_BASE64` — base64 of the PEM private key

@@ -54,6 +54,9 @@ dev = [
 [project.scripts]
 mcp-server-servicenow = "mcp_server_servicenow.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["mcp_server_servicenow*"]
+
 [tool.black]
 line-length = 100
 target-version = ["py38"]

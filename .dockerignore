@@ -21,7 +21,6 @@ env/
 # Local environment & secrets (NEVER ship these in the image)
 .env
 .env.*
-servicenow-jwt-bootstrap.env
 .servicenow-jwt/
 *.pem
 

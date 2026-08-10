@@ -16,8 +16,8 @@ if exist ".venv\Scripts\activate.bat" (
 	call ".venv\Scripts\activate.bat"
 )
 
-REM Start MCP Inspector (often referred to as MCP Explorer)
-REM Pass through any extra args provided to this .bat file.
-npx -y @modelcontextprotocol/inspector python -m mcp_server_servicenow.cli --transport stdio %*
+REM Start MCP Inspector in writable mode with no preset STDIO server.
+REM Add the local or deployed /mcp URL as a Streamable HTTP connection in the UI.
+npx -y @modelcontextprotocol/inspector %*
 
 endlocal

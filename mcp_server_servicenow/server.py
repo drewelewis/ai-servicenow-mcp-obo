@@ -932,7 +932,7 @@ class ServiceNowMCP:
                 auth: Authentication,
                 name: str = "ServiceNow MCP"):
         self.client = ServiceNowClient(instance_url, auth)
-        # Bind host/port explicitly so remote (SSE) hosting can listen on all
+        # Bind host/port explicitly so remote HTTP hosting can listen on all
         # interfaces. Defaults preserve local behaviour (127.0.0.1:8000); the
         # container image sets FASTMCP_HOST=0.0.0.0 so ingress can reach it.
         self.mcp = FastMCP(

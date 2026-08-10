@@ -4,6 +4,12 @@ name: ai-servicenow-mcp-obo
 metadata:
   template: ai-servicenow-mcp-obo@0.1.0
 
+hooks:
+  preprovision:
+    run: ./scripts/azd-preprovision.js
+    interactive: true
+    continueOnError: false
+
 services:
   mcp:
     project: .

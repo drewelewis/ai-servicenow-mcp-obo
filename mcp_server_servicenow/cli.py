@@ -34,7 +34,12 @@ def main():
     
     parser = argparse.ArgumentParser(description="ServiceNow MCP Server")
     parser.add_argument("--url", help="ServiceNow instance URL", default=os.environ.get("SERVICENOW_INSTANCE_URL"))
-    parser.add_argument("--transport", help="Transport protocol (stdio or sse)", default="stdio", choices=["stdio", "sse"])
+    parser.add_argument(
+        "--transport",
+        help="Transport protocol (stdio, sse, or streamable-http)",
+        default="stdio",
+        choices=["stdio", "sse", "streamable-http"],
+    )
     
     # Authentication options
     auth_group = parser.add_argument_group("Authentication")
@@ -193,7 +198,7 @@ def main():
             file=sys.stderr,
         )
     else:
-        print("ServiceNow MCP server starting with sse transport...", file=sys.stderr)
+        print(f"ServiceNow MCP server starting with {args.transport} transport...", file=sys.stderr)
     server.run(transport=args.transport)
 
 if __name__ == "__main__":

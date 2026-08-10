@@ -9,8 +9,7 @@ whole ServiceNow-side setup in order:
     3. Generate the public JWKS document from that key material.
     4. Build the ServiceNow OAuth/JWT provisioning payload templates.
     5. Create/update the ServiceNow ``oauth_jwt`` client record (JWT bearer).
-    6. Emit the resulting ``SERVICENOW_SN_JWT_*`` values to an env file.
-    7. Update ``.env`` in place with those values (the UI-only client secret is
+    6. Update ``.env`` in place with the resulting values (the UI-only client secret is
        left as a placeholder and never overwritten).
 
 It reads connection details from your environment / ``.env`` file:
@@ -221,35 +220,11 @@ def _provision_oauth_jwt(args: argparse.Namespace) -> dict:
     return record
 
 
-def _emit_env(args: argparse.Namespace, record: dict) -> None:
-    _banner("Emit SERVICENOW_SN_JWT_* env values")
-    ns = Namespace(
-        url=args.url,
-        tenant_id=os.environ.get("SERVICENOW_SN_JWT_TENANT_ID"),
-        upstream_client_id=os.environ.get("SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID"),
-        client_id=record.get("client_id", ""),
-        private_key_path=str(PRIVATE_KEY_PATH),
-        token_endpoint=os.environ.get("SERVICENOW_SN_JWT_TOKEN_ENDPOINT"),
-        user_claim_source=os.environ.get("SERVICENOW_SN_JWT_USER_CLAIM_SOURCE", "preferred_username"),
-        client_secret=os.environ.get("SERVICENOW_SN_JWT_CLIENT_SECRET"),
-        scope=os.environ.get("SERVICENOW_SN_JWT_SCOPE"),
-        kid=os.environ.get("SERVICENOW_SN_JWT_KID"),
-        output_file=str(REPO_ROOT / "servicenow-jwt-bootstrap.env"),
-    )
-    if bootstrap._emit_env(ns) != 0:
-        raise SystemExit("Env emission failed.")
-
-
 CLIENT_SECRET_PLACEHOLDER = "__SET_FROM_SERVICENOW_UI__"
 
 
 def _update_env_file(args: argparse.Namespace, record: dict) -> None:
     _banner("Update .env with provisioned values")
-    if not ENV_PATH.exists():
-        print(f"No .env found at {ENV_PATH}; skipping in-place update.")
-        print("Populate your environment from servicenow-jwt-bootstrap.env instead.")
-        return
-
     token_endpoint = os.environ.get("SERVICENOW_SN_JWT_TOKEN_ENDPOINT")
     if not token_endpoint and args.url:
         token_endpoint = args.url.rstrip("/") + "/oauth_token.do"
@@ -268,7 +243,7 @@ def _update_env_file(args: argparse.Namespace, record: dict) -> None:
     # Only write keys that have a concrete value.
     updates = {key: value for key, value in updates.items() if value}
 
-    lines = ENV_PATH.read_text(encoding="utf-8").splitlines()
+    lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
 
     def _key_of(line: str) -> str:
         if not line.lstrip().startswith("#") and "=" in line:
@@ -387,7 +362,6 @@ def main() -> int:
     else:
         _build_payloads(args)
         record = _provision_oauth_jwt(args)
-        _emit_env(args, record)
         _update_env_file(args, record)
 
     _print_next_steps(record)

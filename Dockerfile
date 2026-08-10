@@ -29,5 +29,5 @@ USER appuser
 
 EXPOSE 8000
 
-# Start the MCP server over SSE (HTTP) transport for remote hosting
-CMD ["python", "-m", "mcp_server_servicenow.cli", "--transport", "sse"]
+# Start the MCP server over Streamable HTTP for remote hosting
+CMD ["python", "-m", "mcp_server_servicenow.cli", "--transport", "streamable-http"]

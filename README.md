@@ -205,8 +205,7 @@ What the full run does for you, in order:
 3. Generates the public JWKS document from that key.
 4. Builds the ServiceNow OAuth/JWT provisioning payloads.
 5. Creates (or updates) the ServiceNow `oauth_jwt` client record.
-6. Writes the resulting `SERVICENOW_SN_JWT_*` values to `servicenow-jwt-bootstrap.env`.
-7. Updates your `.env` in place with the provisioned `SERVICENOW_SN_JWT_*` values (for
+6. Updates your `.env` in place with the provisioned `SERVICENOW_SN_JWT_*` values (for
    example the new `SERVICENOW_SN_JWT_CLIENT_ID`), so you do not have to copy them by hand.
    The one value it cannot fill is `SERVICENOW_SN_JWT_CLIENT_SECRET` (visible only in the
    ServiceNow UI); an existing secret is never overwritten, and a placeholder is added if the
@@ -299,22 +298,29 @@ user has that email, ServiceNow rejects the exchange with `invalid_grant` / `Use
 
 ### Step 8 (optional): Set up Entra delegated sign-in
 
-If you want on-behalf-of (OBO) user sign-in through Microsoft Entra, you do **not** create the
-app registrations by hand — [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1)
-provisions them for you with the Azure CLI. It is idempotent (existing apps are reused by
-display name, so re-running is safe) and creates the three registrations the OBO flow needs:
+For Azure deployments, `azd up` owns Entra provisioning through the `preprovision` hook in
+[azure.yaml](azure.yaml). You do **not** run a separate bootstrap command or create app
+registrations by hand. The hook reuses registrations by display name and creates these four
+registrations when missing:
 
-| App (display name) | Role | `.env` values it fills |
+| App (display name) | Why it exists | Generated settings |
 | --- | --- | --- |
-| `servicenow-mcp-obo-interactive-client` | Public client the user signs into (device-code / interactive). Configured as a fallback public client with `http://localhost` redirect. | `SERVICENOW_OBO_PUBLIC_CLIENT_ID` |
-| `servicenow-mcp-obo-broker` | Confidential middle-tier API that receives the user token and performs the OBO exchange. Exposes `user_impersonation`; holds the client secret. | `SERVICENOW_OBO_CLIENT_ID`, `SERVICENOW_OBO_CLIENT_SECRET`, `SERVICENOW_OBO_USER_SCOPE`, `SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID` |
-| `servicenow-mcp-obo-downstream-api` | Downstream API the broker calls on the user's behalf. Exposes `user_impersonation`. | `SERVICENOW_OBO_SCOPE` |
+| `servicenow-mcp-obo-interactive-client` | Public client for local device-code sign-in and MCP Inspector testing. It cannot safely hold a secret and uses the `http://localhost` redirect. | `SERVICENOW_OBO_PUBLIC_CLIENT_ID` |
+| `servicenow-mcp-obo-broker` | Protected API representing the MCP server. It exposes `user_impersonation`; incoming user tokens use this app as their audience, which lets the server validate that the token was issued for MCP. It also acts as the confidential middle tier for the optional direct Entra OBO path. | `SERVICENOW_OBO_CLIENT_ID`, `SERVICENOW_OBO_CLIENT_SECRET`, `SERVICENOW_OBO_USER_SCOPE`, `SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID` |
+| `servicenow-mcp-obo-downstream-api` | Distinct resource audience for the optional direct Entra OBO path. Keeping it separate from the broker gives OBO a real second hop instead of exchanging a token back to the same audience. | `SERVICENOW_OBO_SCOPE` |
+| `servicenow-mcp-copilot-studio-client` | Confidential OAuth client for Copilot Studio. It owns Copilot Studio's callback URI and secret and has delegated permission to request the broker's `user_impersonation` scope as the signed-in user. | `COPILOT_STUDIO_CLIENT_ID`, `COPILOT_STUDIO_CLIENT_SECRET`, `COPILOT_STUDIO_SCOPE` |
 
-Why three apps? OBO is a multi-hop delegation, and Entra requires each hop to be a distinct
-app with its own audience: the public client can't hold a secret, the broker must be a
-different audience than the client that requested the token (that is what makes the exchange
-an *on-behalf-of* exchange), and the downstream API is the resource the broker calls as the
-user. See [obo-flow-options.md](obo-flow-options.md) for the full comparison and diagrams.
+Why four registrations? The **caller** and **protected API** must be separate security
+principals, and each caller type has different credential and redirect requirements. Copilot
+Studio is a confidential web client, while local device-code testing needs a public client
+that holds no secret. The broker is the MCP token audience. The downstream API supplies the
+separate second audience required by the optional direct Entra OBO flow.
+
+For the deployed Copilot Studio → MCP → ServiceNow JWT-bearer path, the broker and Copilot
+Studio client are the production runtime pair. The interactive client supports local testing,
+and the downstream API supports the alternative direct Entra OBO mode. `azd up` provisions
+all four so both documented authentication modes and the test workflow remain available.
+See [obo-flow-options.md](obo-flow-options.md) for the full comparison and diagrams.
 
 **Prerequisites**
 
@@ -323,18 +329,17 @@ user. See [obo-flow-options.md](obo-flow-options.md) for the full comparison and
   cannot consent, the script continues and prints the `az ad app permission admin-consent`
   command for a tenant admin to run.
 
-**Run it**
+For source-only local setup without azd, the bootstrap remains available directly:
 
 ```powershell
 az login
 # Uses the signed-in tenant by default; pass -TenantId to target a specific tenant.
-.\scripts\bootstrap-entra-obo.ps1 -OutputEnvFile ".env.obo.generated"
-.\scripts\apply-obo-env.ps1 -SourceEnvFile ".env.obo.generated" -TargetEnvFile ".env"
+\.\scripts\bootstrap-entra-obo.ps1
 ```
 
-What `bootstrap-entra-obo.ps1` does, in order:
+What the azd hook and `bootstrap-entra-obo.ps1` do, in order:
 
-1. Ensures the three app registrations exist (creating any that are missing) and a service
+1. Ensures the four app registrations exist (creating any that are missing) and a service
    principal for each.
 2. Marks the interactive client as a public client (`http://localhost` redirect).
 3. Exposes the `user_impersonation` scope (token version 2) on the broker and downstream apps
@@ -342,19 +347,23 @@ What `bootstrap-entra-obo.ps1` does, in order:
 4. Configures optional claims (`preferred_username`, `email`, `upn`) on the **broker** app for
    both its access token and id token, so the token the MCP server validates carries the
    delegated user's identity (`email`/`upn` appear only when also set on the user).
-5. Grants the delegated permissions for each hop (interactive client → broker, broker →
-   downstream) and attempts admin consent.
-6. Creates/rotates the broker client secret (`--append`, default 1-year lifetime).
-7. Writes the resulting `SERVICENOW_OBO_*` / `SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID` values to
-   the output env file, which `apply-obo-env.ps1` then merges into your `.env`.
+5. Grants delegated permissions for interactive client → broker, Copilot Studio → broker,
+  and broker → downstream, then attempts admin consent.
+6. Creates one-year broker and Copilot Studio client secrets when missing. Existing azd
+  secrets are reused; pass `-RotateSecrets` only for an intentional rotation.
+7. Upserts generated values directly into the single root `.env`; azd mode also stores them
+  in the active azd environment for Bicep and deployment use.
 
 **Customization** — override any of these parameters when you run the script:
 `-TenantId`, `-BrokerAppName`, `-InteractiveClientAppName`, `-DownstreamApiAppName`,
-`-BrokerScopeName`, `-DownstreamScopeName`, `-SecretYears`, `-OutputEnvFile`.
+`-CopilotStudioClientAppName`, `-CopilotStudioRedirectUri`, `-BrokerScopeName`,
+`-DownstreamScopeName`, `-SecretYears`, `-RotateSecrets`, `-LocalEnvFile`.
 
-> Security note: the broker client secret is written only to the generated env file and then
-> your git-ignored `.env`. Do not commit either. Re-running the script rotates the secret
-> (append mode keeps older secrets valid until they expire).
+> Security note: broker and Copilot Studio client secrets are stored in the git-ignored root
+> `.env`; azd mode also stores them in the active azd environment. Values are not printed.
+> Reruns reuse existing azd secrets; use
+> `-RotateSecrets` only when intentionally rotating credentials. Never commit generated env
+> values or paste them into chat.
 
 **Token claims (how identity flows to ServiceNow)**
 
@@ -410,17 +419,17 @@ _start_mcp_server.bat
 
 Once the login check passes you can exercise the real delegated path by hand using the
 [MCP Inspector](https://github.com/modelcontextprotocol/inspector). Because delegated
-identity travels on the request's `Authorization` header, use the **SSE** transport (stdio
+identity travels on the request's `Authorization` header, use the **Streamable HTTP** transport (stdio
 is a pipe and carries no HTTP headers, so it can list tools but cannot make delegated
 calls).
 
-1. **Start the server in SSE mode** (leave it running):
+1. **Start the server in Streamable HTTP mode** (leave it running):
 
    ```bash
-   python -m mcp_server_servicenow.cli --transport sse
+  python -m mcp_server_servicenow.cli --transport streamable-http
    ```
 
-   It listens on `http://127.0.0.1:8000` and serves the stream at `/sse`.
+  It listens on `http://127.0.0.1:8000` and serves MCP at `/mcp`.
 
 2. **Acquire a user token** for the broker audience via device-code sign-in. The command
    below copies the token to your clipboard **and** prints it to the terminal so you can
@@ -435,7 +444,7 @@ calls).
    URL, enter the code, and sign in as the **Entra user you mapped in Step 7b**. The token
    is short-lived (~1 hour) — re-run this to refresh it.
 
-3. **Launch the Inspector in writable mode** (no preset server, so you can add an SSE
+3. **Launch the Inspector in writable mode** (no preset server, so you can add a Streamable HTTP
    connection with a custom header):
 
    ```bash
@@ -444,9 +453,9 @@ calls).
 
    Open the printed `http://localhost:6274/...` URL.
 
-4. **Add the SSE connection** in the Inspector:
-   - **Transport Type**: `SSE`
-   - **URL**: `http://127.0.0.1:8000/sse`
+4. **Add the Streamable HTTP connection** in the Inspector:
+  - **Transport Type**: `Streamable HTTP`
+  - **URL**: `http://127.0.0.1:8000/mcp`
    - Under **Custom Headers**, add `Authorization` = `Bearer <paste your clipboard token>`.
    - Leave the **OAuth** section empty (if OAuth is configured, the Inspector owns the
      `Authorization` header and ignores your custom value).
@@ -456,7 +465,7 @@ calls).
    terminal for `POST /oauth_token.do` and `GET /api/now/table/incident` returning `200 OK`.
 
 > If a tool call fails with `Missing incoming user token`, the `Authorization` header did
-> not reach the server — confirm you are on the **SSE** transport (not stdio) and the header
+> not reach the server — confirm you are on the **Streamable HTTP** transport (not stdio) and the header
 > value starts with `Bearer `. An `invalid_grant` / expired-token error means the clipboard
 > token aged out; refresh it with the command in step 2.
 
@@ -685,7 +694,16 @@ Stop MCP Explorer when done:
 _stop_mcp_explorer.bat
 ```
 
-Why this matters: `_start_mcp_explorer.bat` launches `python -m mcp_server_servicenow.cli`, which loads values from `.env` automatically.
+`_start_mcp_explorer.bat` opens a writable Inspector session with no preset STDIO
+server. Add a **Streamable HTTP** connection in the UI using either the local URL
+`http://127.0.0.1:8000/mcp` or the deployed URL:
+
+```text
+https://ca-mcp-y3p3ykro4eike.livelybeach-c4bb66ba.eastus2.azurecontainerapps.io/mcp
+```
+
+For delegated tool calls, add the `Authorization` custom header described in
+[Step 11](#step-11-try-it-interactively-with-mcp-inspector-delegated-tool-calls).
 
 ### Configuration in Cline
 
@@ -1016,71 +1034,11 @@ az login
   -BrokerScopeName "user_impersonation" `
   -DownstreamApiAppName "servicenow-mcp-obo-downstream-api" `
   -DownstreamScopeName "user_impersonation" `
-  -SecretYears 1 `
-  -OutputEnvFile ".env.obo.generated"
+  -SecretYears 1
 ```
 
-Expected output artifacts:
-
-1. Console output with the generated env values.
-2. A file (default `.env.obo.generated`) containing:
-   - `SERVICENOW_OBO_TENANT_ID`
-   - `SERVICENOW_OBO_CLIENT_ID`
-   - `SERVICENOW_OBO_CLIENT_SECRET`
-   - `SERVICENOW_OBO_SCOPE`
-  - `SERVICENOW_OBO_PUBLIC_CLIENT_ID`
-  - `SERVICENOW_OBO_USER_SCOPE`
-   - `SERVICENOW_OBO_TOKEN_ENDPOINT`
-   - `SERVICENOW_OBO_USER_ASSERTION` placeholder
-
-Then apply those values to your `.env` used by this MCP server.
-
-#### Merge Generated OBO Values Into .env
-
-Use the helper script to merge generated OBO settings into your existing `.env` while preserving unrelated keys.
-
-Script path:
-
-- `scripts/apply-obo-env.ps1`
-
-Run:
-
-```powershell
-# Dry run (shows which keys will be applied)
-.\scripts\apply-obo-env.ps1 -SourceEnvFile ".env.obo.generated" -TargetEnvFile ".env" -WhatIfOnly
-
-# Apply changes and create backup of .env
-.\scripts\apply-obo-env.ps1 -SourceEnvFile ".env.obo.generated" -TargetEnvFile ".env"
-```
-
-Behavior:
-
-1. Reads OBO values from the generated file.
-2. Updates these keys in `.env`:
-  - `SERVICENOW_OBO_TENANT_ID`
-  - `SERVICENOW_OBO_CLIENT_ID`
-  - `SERVICENOW_OBO_CLIENT_SECRET`
-  - `SERVICENOW_OBO_SCOPE`
-  - `SERVICENOW_OBO_PUBLIC_CLIENT_ID`
-  - `SERVICENOW_OBO_USER_SCOPE`
-  - `SERVICENOW_OBO_TOKEN_ENDPOINT`
-  - `SERVICENOW_OBO_USER_ASSERTION`
-  - `SERVICENOW_SN_JWT_TENANT_ID`
-  - `SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID`
-  - `SERVICENOW_SN_JWT_CLIENT_ID`
-  - `SERVICENOW_SN_JWT_CLIENT_SECRET`
-  - `SERVICENOW_SN_JWT_PRIVATE_KEY_PATH`
-  - `SERVICENOW_SN_JWT_TOKEN_ENDPOINT`
-  - `SERVICENOW_SN_JWT_USER_CLAIM_SOURCE`
-  - `SERVICENOW_SN_JWT_SCOPE`
-  - `SERVICENOW_SN_JWT_KID`
-  - `SERVICENOW_SN_JWT_EXPECTED_AUDIENCE`
-  - `SERVICENOW_SN_JWT_EXPECTED_ISSUER`
-  - `SERVICENOW_SN_JWT_ASSERTION_TTL`
-  - `SERVICENOW_SN_JWT_CACHE_SAFETY_BUFFER`
-  - `SERVICENOW_SN_JWT_USER_ASSERTION`
-  - `SERVICENOW_SN_JWT_ALLOW_STATIC_ASSERTION`
-3. Creates timestamped backup file by default: `.env.bak-YYYYMMDD-HHMMSS`.
+The script updates the root `.env` in place, preserving unrelated keys. It does not print
+generated IDs or secrets and does not create a second environment file.
 
 ### Validated ServiceNow JWT Bearer Notes (This Tenant)
 
@@ -1130,7 +1088,7 @@ Notes:
 
 The server can run locally for development or be hosted on **Azure Container Apps** for
 remote MCP hosts. The Azure deployment uses the **Azure Developer CLI (`azd`)** with
-Bicep infrastructure under [infra/](infra/), and runs the server over the **SSE**
+Bicep infrastructure under [infra/](infra/), and runs the server over **Streamable HTTP**
 transport behind external HTTPS ingress. Delegated identity still flows per request:
 the MCP host presents the user's Entra bearer token on each `tools/call`, and the server
 performs the ServiceNow JWT-bearer exchange as that user.
@@ -1154,7 +1112,7 @@ flowchart TB
             direction TB
             subgraph ACASubnet["snet-aca (/23, delegated)"]
                 ACAEnv["Container Apps environment<br/>(VNet-integrated)"]
-                App["Container App: ca-mcp-*<br/>SSE server, ingress 443 to 8000"]
+                App["Container App: ca-mcp-*<br/>Streamable HTTP, ingress 443 to 8000"]
             end
             subgraph PESubnet["snet-pep (/24)"]
                 KVPE["Key Vault private endpoint<br/>pe-kv-*"]
@@ -1168,7 +1126,7 @@ flowchart TB
     end
 
     Host -- "1. user signs in" --> Entra
-    Host -- "2. HTTPS SSE + Bearer token" --> App
+    Host -- "2. HTTPS /mcp + Bearer token" --> App
     App -- "3. validate token / OBO" --> Entra
     App -- "4. JWT-bearer assertion (as user)" --> SNInstance
     App -- "5. REST Table API (as user)" --> SNInstance
@@ -1186,7 +1144,7 @@ flowchart TB
 
 **How the pieces fit together**
 
-- **MCP host → Container App**: the host connects to the SSE endpoint over HTTPS and
+- **MCP host → Container App**: the host connects to the `/mcp` endpoint over HTTPS and
   sends the signed-in user's Entra bearer token on each `tools/call`.
 - **Container App → Entra / ServiceNow**: the server validates the incoming token, then
   mints a short-lived JWT assertion carrying the user's identity to obtain a ServiceNow
@@ -1214,7 +1172,7 @@ sequenceDiagram
     participant U as User
     participant Host as MCP host / client
     participant Entra as Microsoft Entra ID
-    participant App as Container App (SSE server)
+    participant App as Container App (Streamable HTTP)
     participant KV as Key Vault (private endpoint)
     participant SN as ServiceNow
 
@@ -1250,7 +1208,7 @@ sequenceDiagram
 | Virtual network | `vnet-*` | `snet-aca` (delegated) + `snet-pep` (private endpoints) |
 | Key Vault private endpoint + private DNS | `pe-kv-*` | Private data-plane access to Key Vault |
 | Container Apps environment | `cae-*` | VNet-integrated hosting environment |
-| Container App | `ca-mcp-*` | The MCP server (SSE, external HTTPS ingress) |
+| Container App | `ca-mcp-*` | The MCP server (Streamable HTTP, external HTTPS ingress) |
 
 ### Prerequisites for deployment
 
@@ -1267,8 +1225,6 @@ Set the required values on the `azd` environment (mapped to Bicep in
 ```bash
 azd env new servicenow-mcp
 azd env set SERVICENOW_INSTANCE_URL "https://dev123456.service-now.com/"
-azd env set SERVICENOW_SN_JWT_TENANT_ID "<entra-tenant-id>"
-azd env set SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID "<expected-audience-client-id>"
 azd env set SERVICENOW_SN_JWT_CLIENT_ID "<servicenow-oauth-jwt-client-id>"
 azd env set SERVICENOW_SN_JWT_TOKEN_ENDPOINT "https://dev123456.service-now.com/oauth_token.do"
 azd env set SERVICENOW_SN_JWT_JWKS_URL "<public-jwks-url>"
@@ -1280,11 +1236,12 @@ azd env set SERVICENOW_SN_JWT_CLIENT_SECRET "<servicenow-client-secret>"
 azd up
 ```
 
-`azd up` provisions the infrastructure, builds the image in ACR, and deploys the
-Container App. On success it prints the service endpoint (the `SERVICE_MCP_URI` output);
-the MCP SSE URL is that endpoint with `/sse` appended.
+`azd up` first provisions/reuses the four Entra registrations and stores their generated IDs,
+scopes, and secrets in the active azd environment. It then provisions the infrastructure,
+builds the image in ACR, and deploys the Container App. On success it prints the service
+endpoint (the `SERVICE_MCP_URI` output); the MCP URL is that endpoint with `/mcp` appended.
 
-> **Security note:** the SSE endpoint is publicly reachable and `tools/list` over SSE is
+> **Security note:** the `/mcp` endpoint is publicly reachable and `tools/list` is
 > currently unauthenticated; actual tool **calls** require a valid delegated bearer token.
 > Restricting the endpoint (ingress IP allow-list, platform auth, or a fronting gateway)
 > is tracked as a follow-up in [todo.md](todo.md).
@@ -1300,26 +1257,43 @@ and logs.
 azd env get-values | Select-String SERVICE_MCP_URI
 ```
 
-The MCP SSE URL is that value with `/sse` appended (for example
-`https://ca-mcp-<token>.<region>.azurecontainerapps.io/sse`).
+The MCP URL is that value with `/mcp` appended (for example
+`https://ca-mcp-<token>.<region>.azurecontainerapps.io/mcp`).
 
 **2. Reachability probe (no auth)**
 
-The SSE stream itself is not gated, so a quick probe confirms ingress and that the app is
-running. Use `curl.exe` with a timeout — the stream stays open, so `Invoke-WebRequest`
-would hang:
+An MCP `initialize` request confirms ingress and verifies the Streamable HTTP route. The
+probe does not call a ServiceNow tool, so it does not require a delegated user token:
 
 ```powershell
-curl.exe -N --max-time 5 -i "https://ca-mcp-<token>.<region>.azurecontainerapps.io/sse"
+$body = @{
+  jsonrpc = "2.0"
+  id = 1
+  method = "initialize"
+  params = @{
+    protocolVersion = "2025-03-26"
+    capabilities = @{}
+    clientInfo = @{ name = "probe"; version = "1.0" }
+  }
+} | ConvertTo-Json -Depth 5 -Compress
+
+$response = Invoke-WebRequest -UseBasicParsing `
+  -Method Post `
+  -Uri "https://ca-mcp-<token>.<region>.azurecontainerapps.io/mcp" `
+  -ContentType "application/json" `
+  -Headers @{ Accept = "application/json, text/event-stream" } `
+  -Body $body
+$response.StatusCode
+$response.Content
 ```
 
-Expect `HTTP/1.1 200 OK`, `content-type: text/event-stream`, and an `event: endpoint`
-line.
+Expect status `200` and a JSON-RPC initialization response (which may be framed as a
+`text/event-stream` message, as allowed by Streamable HTTP).
 
 **3. Authenticated end-to-end (delegated tool call)**
 
 Tool calls require the user's Entra bearer token, so point **MCP Inspector** at the remote
-SSE URL and attach the token as a header:
+Streamable HTTP URL and attach the token as a header:
 
 ```powershell
 npx -y @modelcontextprotocol/inspector
@@ -1327,8 +1301,8 @@ npx -y @modelcontextprotocol/inspector
 
 In the Inspector UI:
 
-- **Transport Type**: `SSE`
-- **URL**: the `/sse` endpoint above
+- **Transport Type**: `Streamable HTTP`
+- **URL**: the `/mcp` endpoint above
 - **Authentication → Header Name**: `Authorization`, **Value**: `Bearer <user-access-token>`
 - Click **Connect**, then **List Tools**, then run a tool such as `list_incidents`.
 
@@ -1336,12 +1310,46 @@ To obtain `<user-access-token>`, use the same device-code sign-in shown in
 [Step 11](#step-11-try-it-interactively-with-mcp-inspector-delegated-tool-calls), which
 copies the token straight to your clipboard (never paste tokens into chat). The only
 difference for the deployed server is the Inspector **URL** — point it at the remote
-`/sse` endpoint instead of `http://127.0.0.1:8000/sse`.
+`/mcp` endpoint instead of `http://127.0.0.1:8000/mcp`.
 
 > [scripts/interactive_mcp_client.py](scripts/interactive_mcp_client.py) and the login helper
-> exercise the ServiceNow JWT-bearer path **directly** (not through the remote SSE server),
+> exercise the ServiceNow JWT-bearer path **directly** (not through the remote MCP server),
 > so they validate auth and configuration but not the deployed ingress. MCP Inspector
-> against the `/sse` URL is what tests the Azure-hosted server end-to-end.
+> against the `/mcp` URL is what tests the Azure-hosted server end-to-end.
+
+### Connect from Copilot Studio
+
+In the MCP onboarding wizard, use the deployed `/mcp` URL and select **OAuth 2.0**
+authentication. `azd up` has already provisioned the dedicated Entra client and delegated
+broker permission. The preprovision hook writes the generated values to both the active azd
+environment and the repository's git-ignored `.env`. Map the **Manual** OAuth 2.0 fields as
+follows:
+
+| Copilot Studio field | `.env` setting |
+| --- | --- |
+| Client ID | `COPILOT_STUDIO_CLIENT_ID` |
+| Client secret | `COPILOT_STUDIO_CLIENT_SECRET` |
+| Authorization URL | `COPILOT_STUDIO_AUTHORIZATION_URL` |
+| Token URL template | `COPILOT_STUDIO_TOKEN_URL` |
+| Refresh URL | `COPILOT_STUDIO_REFRESH_URL` (same Entra v2 endpoint as Token URL) |
+| Scopes | `COPILOT_STUDIO_SCOPE` |
+| Redirect URL | Generated by Copilot Studio after saving; it is not an input on the first pass. |
+
+Read these values locally from `.env`; never copy the client secret into source files or
+chat. The hook upserts only generated Entra/OAuth keys and preserves unrelated `.env`
+settings.
+
+Copilot Studio generates its callback URL during onboarding. Add it through azd and rerun:
+
+```powershell
+azd env set COPILOT_STUDIO_REDIRECT_URI "<callback-url-from-copilot-studio>"
+azd up
+```
+
+The preprovision hook adds the URI to the existing client, writes
+`COPILOT_STUDIO_REDIRECT_URI` to `.env`, and does not rotate its secret.
+Copilot Studio then sends the signed-in user's broker-audience token in the `Authorization`
+header; the server validates it and performs the ServiceNow JWT-bearer exchange as that user.
 
 **4. Check server logs**
 
