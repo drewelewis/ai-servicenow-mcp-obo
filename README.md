@@ -19,6 +19,92 @@ Important distinction:
 - `_start_mcp_server.bat`: production server entrypoint for MCP hosts.
 - `_start_obo.bat`: interactive local test helper only (useful for manual validation, not the production MCP host path).
 
+## How Sign-In Works (Simplified)
+
+The deployed Copilot Studio path uses **two access tokens** because Entra and ServiceNow
+are separate security systems. Copilot Studio never receives a ServiceNow password, and
+the MCP server never treats an Entra token as if ServiceNow issued it.
+
+```mermaid
+sequenceDiagram
+  actor User
+  participant C as Copilot Studio
+  participant E as Microsoft Entra ID
+  participant M as ServiceNow MCP server
+  participant S as ServiceNow
+
+  User->>C: Ask for my incidents
+  C->>E: Sign in and request MCP permission
+  E-->>C: Token 1 for the MCP broker API
+  C->>M: MCP tool call + Token 1
+  M->>M: Validate signature, tenant, audience, and expiry
+  M->>S: Signed user assertion to oauth_token.do
+  S-->>M: Token 2 for ServiceNow APIs
+  M->>S: Query incidents with Token 2
+  S-->>M: Incidents visible to that user
+  M-->>C: MCP tool result
+  C-->>User: Answer
+```
+
+### The two OAuth legs
+
+| Leg | What happens | Why it exists |
+| --- | --- | --- |
+| **1. User → Copilot Studio → MCP** | The user signs in with Entra. Power Platform uses the Copilot Studio client registration to obtain an access token whose audience is the MCP broker API. Copilot Studio sends that token in the MCP request. | Proves who called the MCP server and that the broker's `user_impersonation` permission is granted for the signed-in user. |
+| **2. MCP → ServiceNow** | The MCP server validates the Entra token, takes the validated user identity, signs a short-lived JWT assertion, and exchanges it at ServiceNow's `oauth_token.do` endpoint for a ServiceNow access token. | Converts trusted Entra identity into a token that ServiceNow understands, without sharing the user's ServiceNow password. |
+
+The browser is needed only to establish or repair the Power Platform connection. During
+that first sign-in, Entra returns a one-time authorization code to the registered Power
+Platform redirect URI. Power Platform proves the code exchange with PKCE and the connector's
+confidential-client secret, then stores the resulting access and refresh tokens in the
+connection. Later tool calls reuse the access token and silently use the refresh token when
+the access token expires. The MCP server receives the access token, not the user's password,
+authorization code, client secret, or refresh token.
+
+This repository often uses **OBO** (on-behalf-of) as the architectural description: the
+server acts on behalf of the signed-in user rather than as one shared service account. The
+deployed path is specifically an **Entra-to-ServiceNow OAuth JWT-bearer bridge**. It is not
+the standard Entra OBO grant all the way to ServiceNow; ServiceNow issues the second token.
+The optional direct Entra OBO design is documented separately in
+[obo-flow-options.md](obo-flow-options.md).
+
+### OAuth terms in plain language
+
+- **Client ID** identifies the application asking Entra for a token; it is not secret.
+- **Client secret** proves that the Copilot Studio connector is the registered confidential
+  client during the authorization-code exchange. It must remain secret.
+- **Redirect URI** is the exact Power Platform callback where Entra returns the one-time
+  authorization code after sign-in.
+- **Scope** is the permission being requested. Here, `user_impersonation` means the MCP
+  server may act as the signed-in user within the broker API's boundary.
+- **Access token** is short-lived proof accepted by one intended audience. Entra access
+  tokens normally last about 60–90 minutes when no custom lifetime policy applies.
+- **Refresh token** lets Power Platform obtain a new access token without asking the user
+  to sign in every 60–90 minutes. The `offline_access` scope is what requests it.
+- **Audience** says which API may accept a token. Token 1 is for the MCP broker, while
+  Token 2 is for ServiceNow; they are not interchangeable.
+
+### Where Microsoft 365 Agents SDK fits
+
+The official product name is
+[Microsoft 365 Agents SDK](https://learn.microsoft.com/microsoft-365/agents-sdk/agents-sdk-overview).
+It is a code-first framework for building conversational agents that receive messages across
+channels such as Microsoft Teams, Microsoft 365 Copilot, and web chat. It supplies channel
+integration, activity routing, and conversation state; it is not an AI model, a no-code
+builder, or a replacement for this MCP server.
+
+| Choice | How it fits this design |
+| --- | --- |
+| **Keep Copilot Studio (current design)** | Best when the low-code agent, Power Platform connection management, and built-in test/publish experience are useful. The Manual OAuth connector acquires and refreshes Token 1, and this MCP server performs Leg 2. No Agents SDK component is required. |
+| **Use Microsoft 365 Agents SDK instead of Copilot Studio** | A custom code-first agent can become the upstream MCP host. Its code must acquire an Entra token for the broker scope and attach it to each MCP request. The existing MCP server and ServiceNow exchange can remain unchanged. |
+| **Use both** | An Agents SDK application can provide a custom channel or conversation layer while calling the same MCP server, but this adds another hosted component and operational boundary. Use it only when custom channel behavior or code-level conversation control justifies that complexity. |
+| **Do not use it as a token shortcut** | Agents SDK channel authentication does not automatically create a broker-audience token for this MCP API, does not remove the Entra app registrations, and does not replace the ServiceNow JWT-bearer exchange. Those delegated authorization boundaries still need explicit configuration and validation. |
+
+For newcomers, the recommended path is to keep Copilot Studio as the agent host and let
+`azd up` automate the identity plumbing. Introduce Microsoft 365 Agents SDK only when you
+need a code-first agent, additional channels, or custom conversation/state handling that
+Copilot Studio does not provide.
+
 ## Features
 
 ### Resources
