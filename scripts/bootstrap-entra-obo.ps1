@@ -9,7 +9,7 @@ param(
     [string]$DownstreamScopeName = "user_impersonation",
     [string]$DownstreamIdentifierUri,
     [string]$CopilotStudioClientAppName = "servicenow-mcp-copilot-studio-client",
-    [string]$CopilotStudioRedirectUri,
+    [Alias("CopilotStudioRedirectUri")][string[]]$CopilotStudioRedirectUris,
     [int]$SecretYears = 1,
     [switch]$ConfigureAzdEnvironment,
     [switch]$RotateSecrets,
@@ -18,6 +18,20 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+function ConvertFrom-AzdEnvironmentValue {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $trimmedValue = $Value.Trim()
+    if ($trimmedValue.StartsWith('"') -and $trimmedValue.EndsWith('"')) {
+        try {
+            return ConvertFrom-Json -InputObject $trimmedValue
+        } catch {
+            throw "Could not decode a quoted value from the active azd environment."
+        }
+    }
+    return $trimmedValue
+}
 
 function Assert-AzCli {
     if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
@@ -55,7 +69,7 @@ function Get-AzdEnvironmentValues {
 
     foreach ($line in $rawValues) {
         if ($line -match '^([^=]+)=(.*)$') {
-            $values[$matches[1]] = $matches[2].Trim().Trim('"')
+            $values[$matches[1]] = ConvertFrom-AzdEnvironmentValue -Value $matches[2]
         }
     }
 
@@ -383,14 +397,16 @@ Grant-DelegatedPermission -ClientAppId $brokerApp.appId -ResourceAppId $downstre
 Grant-DelegatedPermission -ClientAppId $interactiveClientApp.appId -ResourceAppId $brokerApp.appId -ScopeId $brokerScopeId -ScopeName $BrokerScopeName -ClientLabel "interactive client app"
 Grant-DelegatedPermission -ClientAppId $copilotStudioClientApp.appId -ResourceAppId $brokerApp.appId -ScopeId $brokerScopeId -ScopeName $BrokerScopeName -ClientLabel "Copilot Studio client app"
 
-if ([string]::IsNullOrWhiteSpace($CopilotStudioRedirectUri) -and $azdValues.ContainsKey("COPILOT_STUDIO_REDIRECT_URI")) {
-    $CopilotStudioRedirectUri = $azdValues["COPILOT_STUDIO_REDIRECT_URI"]
+if (($null -eq $CopilotStudioRedirectUris -or $CopilotStudioRedirectUris.Count -eq 0) -and $azdValues.ContainsKey("COPILOT_STUDIO_REDIRECT_URI")) {
+    $CopilotStudioRedirectUris = @($azdValues["COPILOT_STUDIO_REDIRECT_URI"])
 }
 
-if (-not [string]::IsNullOrWhiteSpace($CopilotStudioRedirectUri)) {
-    Configure-WebRedirectUri -AppObjectId $copilotStudioClientApp.id -RedirectUri $CopilotStudioRedirectUri
+if ($null -ne $CopilotStudioRedirectUris -and $CopilotStudioRedirectUris.Count -gt 0) {
+    foreach ($redirectUri in @($CopilotStudioRedirectUris | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)) {
+        Configure-WebRedirectUri -AppObjectId $copilotStudioClientApp.id -RedirectUri $redirectUri
+    }
 } else {
-    Write-Warning "Copilot Studio callback URI is not set. After Copilot Studio provides it, run 'azd env set COPILOT_STUDIO_REDIRECT_URI <uri>' and rerun 'azd up'."
+    Write-Warning "Copilot Studio callback URI is not available. Configure POWER_PLATFORM_PAC_PROFILE after Copilot Studio creates the connector, then rerun azd up."
 }
 
 $existingBrokerSecret = if ($azdValues.ContainsKey("SERVICENOW_OBO_CLIENT_SECRET")) { $azdValues["SERVICENOW_OBO_CLIENT_SECRET"] } else { $null }
@@ -400,6 +416,7 @@ $copilotStudioClientSecret = Get-OrCreateClientSecret -AppId $copilotStudioClien
 $tokenEndpoint = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
 $scopeValue = "$DownstreamIdentifierUri/.default"
 $userScopeValue = "$BrokerIdentifierUri/$BrokerScopeName"
+$copilotStudioScopeValue = "openid profile offline_access $userScopeValue"
 $authorizationEndpoint = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/authorize"
 
 $generatedValues = @{
@@ -415,14 +432,15 @@ $generatedValues = @{
     "COPILOT_STUDIO_TENANT_ID" = $TenantId
     "COPILOT_STUDIO_CLIENT_ID" = $copilotStudioClientApp.appId
     "COPILOT_STUDIO_CLIENT_SECRET" = $copilotStudioClientSecret
-    "COPILOT_STUDIO_SCOPE" = $userScopeValue
+    "COPILOT_STUDIO_SCOPE" = $copilotStudioScopeValue
     "COPILOT_STUDIO_AUTHORIZATION_URL" = $authorizationEndpoint
     "COPILOT_STUDIO_TOKEN_URL" = $tokenEndpoint
     "COPILOT_STUDIO_REFRESH_URL" = $tokenEndpoint
 }
 
-if (-not [string]::IsNullOrWhiteSpace($CopilotStudioRedirectUri)) {
-    $generatedValues["COPILOT_STUDIO_REDIRECT_URI"] = $CopilotStudioRedirectUri
+if ($null -ne $CopilotStudioRedirectUris -and $CopilotStudioRedirectUris.Count -gt 0) {
+    $generatedValues["COPILOT_STUDIO_REDIRECT_URI"] = $CopilotStudioRedirectUris[-1]
+    $generatedValues["COPILOT_STUDIO_REDIRECT_URIS_JSON"] = ConvertTo-Json -InputObject @($CopilotStudioRedirectUris) -Compress
 }
 
 if ($ConfigureAzdEnvironment) {

@@ -560,7 +560,8 @@ class ServiceNowJWTBearerUserAuth(Authentication):
 
         self._validator = EntraTokenValidator(
             tenant_id=tenant_id,
-            expected_audiences=expected_audiences or [upstream_client_id],
+            expected_audiences=expected_audiences
+            or [upstream_client_id, f"api://{upstream_client_id}"],
             expected_issuers=expected_issuers,
         )
 

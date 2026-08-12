@@ -4,6 +4,20 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function ConvertFrom-AzdEnvironmentValue {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $trimmedValue = $Value.Trim()
+    if ($trimmedValue.StartsWith('"') -and $trimmedValue.EndsWith('"')) {
+        try {
+            return ConvertFrom-Json -InputObject $trimmedValue
+        } catch {
+            throw "Could not decode a quoted value from the active azd environment."
+        }
+    }
+    return $trimmedValue
+}
+
 function Get-AzdEnvironmentValues {
     $values = @{}
     if (-not [string]::IsNullOrWhiteSpace($env:AZURE_ENV_NAME)) {
@@ -20,11 +34,211 @@ function Get-AzdEnvironmentValues {
 
     foreach ($line in $rawValues) {
         if ($line -match '^([^=]+)=(.*)$') {
-            $values[$matches[1]] = $matches[2].Trim().Trim('"')
+            $values[$matches[1]] = ConvertFrom-AzdEnvironmentValue -Value $matches[2]
         }
     }
 
     return $values
+}
+
+function ConvertTo-NormalizedScopes {
+    param($Scopes)
+
+    return @(
+        @($Scopes) |
+            ForEach-Object { @([string]$_ -split '\s+') } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Sort-Object -Unique
+    )
+}
+
+function Compare-Scopes {
+    param($Actual, $Expected)
+
+    $actualScopes = @(ConvertTo-NormalizedScopes -Scopes $Actual)
+    $expectedScopes = @(ConvertTo-NormalizedScopes -Scopes $Expected)
+    return ($actualScopes.Count -eq $expectedScopes.Count) -and
+        -not (Compare-Object -ReferenceObject $actualScopes -DifferenceObject $expectedScopes)
+}
+
+function Sync-PowerPlatformConnectorScopes {
+    param(
+        [Parameter(Mandatory = $true)][string]$PacPath,
+        [Parameter(Mandatory = $true)][string]$ConnectorId,
+        [Parameter(Mandatory = $true)][string]$ConnectorName,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedScopes
+    )
+
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("servicenow-mcp-connector-" + [Guid]::NewGuid().ToString())
+    $updatedRoot = "$tempRoot-verify"
+    try {
+        & $PacPath connector download --connector-id $ConnectorId --outputDirectory $tempRoot | Out-Null
+        $propertiesPath = Join-Path $tempRoot "apiProperties.json"
+        $definitionPath = Join-Path $tempRoot "apiDefinition.json"
+        if (-not (Test-Path -Path $propertiesPath -PathType Leaf)) {
+            throw "PAC did not download OAuth properties for Copilot Studio connector '$ConnectorName'."
+        }
+        if (-not (Test-Path -Path $definitionPath -PathType Leaf)) {
+            throw "PAC did not download the API definition for Copilot Studio connector '$ConnectorName'."
+        }
+
+        $apiProperties = Get-Content -Path $propertiesPath -Raw | ConvertFrom-Json
+        $oauthSettings = $apiProperties.properties.connectionParameters.token.oAuthSettings
+        if ($null -eq $oauthSettings) {
+            throw "Copilot Studio connector '$ConnectorName' does not expose OAuth settings."
+        }
+        if ($oauthSettings.PSObject.Properties["clientSecret"]) {
+            throw "Downloaded connector '$ConnectorName' unexpectedly contains a client secret."
+        }
+        if (Compare-Scopes -Actual $oauthSettings.scopes -Expected $ExpectedScopes) {
+            Write-Host "Copilot Studio connector '$ConnectorName' already has refresh-capable OAuth scopes."
+            return
+        }
+
+        $oauthSettings.scopes = @($ExpectedScopes)
+        Set-Content -Path $propertiesPath -Value ($apiProperties | ConvertTo-Json -Depth 100) -Encoding UTF8
+        & $PacPath connector update `
+            --connector-id $ConnectorId `
+            --api-definition-file $definitionPath `
+            --api-properties-file $propertiesPath | Out-Null
+
+        & $PacPath connector download --connector-id $ConnectorId --outputDirectory $updatedRoot | Out-Null
+        $updatedPropertiesPath = Join-Path $updatedRoot "apiProperties.json"
+        if (-not (Test-Path -Path $updatedPropertiesPath -PathType Leaf)) {
+            throw "PAC did not return updated OAuth properties for Copilot Studio connector '$ConnectorName'."
+        }
+        $updatedProperties = Get-Content -Path $updatedPropertiesPath -Raw | ConvertFrom-Json
+        $updatedScopes = $updatedProperties.properties.connectionParameters.token.oAuthSettings.scopes
+        if (-not (Compare-Scopes -Actual $updatedScopes -Expected $ExpectedScopes)) {
+            throw "OAuth scope reconciliation did not persist for Copilot Studio connector '$ConnectorName'."
+        }
+        Write-Host "Updated Copilot Studio connector '$ConnectorName' with refresh-capable OAuth scopes."
+    } finally {
+        Remove-Item -Path $tempRoot, $updatedRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-PowerPlatformRedirectUris {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$AzdValues,
+        [Parameter(Mandatory = $true)][string]$TenantId
+    )
+
+    $profileName = $AzdValues["POWER_PLATFORM_PAC_PROFILE"]
+    if ([string]::IsNullOrWhiteSpace($profileName)) {
+        return @()
+    }
+
+    $pacPath = $AzdValues["POWER_PLATFORM_PAC_PATH"]
+    if ([string]::IsNullOrWhiteSpace($pacPath)) {
+        $pacCommand = Get-Command pac -ErrorAction SilentlyContinue
+        if ($null -ne $pacCommand) {
+            $pacPath = $pacCommand.Source
+        } else {
+            $pacLauncherPath = Join-Path $env:LOCALAPPDATA "Microsoft\PowerAppsCLI\pac.launcher.exe"
+            if (Test-Path -Path $pacLauncherPath -PathType Leaf) {
+                $pacPath = $pacLauncherPath
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($pacPath) -or -not (Test-Path -Path $pacPath -PathType Leaf)) {
+        throw "Power Platform CLI was not found. Install PAC or set POWER_PLATFORM_PAC_PATH."
+    }
+
+    & $pacPath auth select --name $profileName | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "PAC authentication profile '$profileName' was not found. Create it before running azd up."
+    }
+
+    $organizationJson = ((& $pacPath org who --json) -join "`n")
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($organizationJson)) {
+        throw "PAC profile '$profileName' is not authenticated or has no selected environment."
+    }
+    $organization = $organizationJson | ConvertFrom-Json
+
+    $environmentId = $AzdValues["POWER_PLATFORM_ENVIRONMENT_ID"]
+    if ([string]::IsNullOrWhiteSpace($environmentId)) {
+        $environmentId = $organization.EnvironmentId
+    }
+    if ([string]::IsNullOrWhiteSpace($environmentId)) {
+        throw "POWER_PLATFORM_ENVIRONMENT_ID is not set and PAC did not return an environment ID."
+    }
+
+    $connectorNamesJson = $AzdValues["COPILOT_STUDIO_CONNECTOR_DISPLAY_NAMES_JSON"]
+    if ([string]::IsNullOrWhiteSpace($connectorNamesJson)) {
+        $connectorNamesJson = '["ServiceNow MCP"]'
+    }
+    try {
+        $parsedConnectorNames = ConvertFrom-Json -InputObject $connectorNamesJson
+        $connectorNames = @($parsedConnectorNames | ForEach-Object { $_ })
+    } catch {
+        throw "COPILOT_STUDIO_CONNECTOR_DISPLAY_NAMES_JSON must be a JSON array of connector display names."
+    }
+    if ($connectorNames.Count -eq 0) {
+        throw "COPILOT_STUDIO_CONNECTOR_DISPLAY_NAMES_JSON must contain at least one display name."
+    }
+
+    $brokerClientId = $AzdValues["SERVICENOW_OBO_CLIENT_ID"]
+    if ([string]::IsNullOrWhiteSpace($brokerClientId)) {
+        throw "SERVICENOW_OBO_CLIENT_ID is required to reconcile Copilot Studio OAuth scopes."
+    }
+    $expectedScopes = @(
+        "openid",
+        "profile",
+        "offline_access",
+        "api://$brokerClientId/user_impersonation"
+    )
+
+    $connectorListJson = ((& $pacPath connector list --json) -join "`n")
+    if ([string]::IsNullOrWhiteSpace($connectorListJson)) {
+        throw "PAC did not return connectors for OAuth scope reconciliation."
+    }
+    $pacConnectors = @((ConvertFrom-Json -InputObject $connectorListJson) | ForEach-Object { $_ })
+
+    $accessToken = az account get-access-token --tenant $TenantId --resource "https://service.powerapps.com/" --query accessToken --output tsv
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($accessToken)) {
+        throw "Azure CLI could not acquire a Power Apps access token for callback discovery."
+    }
+
+    try {
+        $escapedEnvironmentId = [uri]::EscapeDataString($environmentId)
+        $apiUri = "https://api.powerapps.com/providers/Microsoft.PowerApps/scopes/admin/environments/$escapedEnvironmentId/apis?api-version=2016-11-01"
+        $response = Invoke-RestMethod -Method Get -Uri $apiUri -Headers @{ Authorization = "Bearer $accessToken" }
+    } finally {
+        $accessToken = $null
+    }
+
+    $redirectUris = @()
+    foreach ($connectorName in $connectorNames) {
+        $connector = @($response.value) |
+            Where-Object { $_.properties.displayName -eq $connectorName } |
+            Sort-Object { $_.properties.changedTime } -Descending |
+            Select-Object -First 1
+        if ($null -eq $connector) {
+            throw "Copilot Studio connector '$connectorName' was not found in Power Platform environment '$environmentId'."
+        }
+
+        $redirectUrl = $connector.properties.connectionParameters.token.oAuthSettings.redirectUrl
+        if ([string]::IsNullOrWhiteSpace($redirectUrl)) {
+            throw "Copilot Studio connector '$connectorName' does not expose an OAuth callback URL."
+        }
+
+        $matchingPacConnectors = @($pacConnectors | Where-Object { $_.DisplayName -eq $connectorName })
+        if ($matchingPacConnectors.Count -ne 1) {
+            throw "Expected exactly one PAC connector named '$connectorName', but found $($matchingPacConnectors.Count)."
+        }
+        Sync-PowerPlatformConnectorScopes `
+            -PacPath $pacPath `
+            -ConnectorId $matchingPacConnectors[0].ConnectorId `
+            -ConnectorName $connectorName `
+            -ExpectedScopes $expectedScopes
+
+        $redirectUris += $redirectUrl
+        Write-Host "Discovered the OAuth callback for Copilot Studio connector '$connectorName'."
+    }
+
+    return @($redirectUris | Select-Object -Unique)
 }
 
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
@@ -76,8 +290,12 @@ $bootstrapParameters = @{
     ConfigureAzdEnvironment = $true
 }
 
-if ($azdValues.ContainsKey("COPILOT_STUDIO_REDIRECT_URI")) {
-    $bootstrapParameters["CopilotStudioRedirectUri"] = $azdValues["COPILOT_STUDIO_REDIRECT_URI"]
+$copilotStudioRedirectUris = @(Get-PowerPlatformRedirectUris -AzdValues $azdValues -TenantId $tenantId)
+if ($copilotStudioRedirectUris.Count -eq 0 -and $azdValues.ContainsKey("COPILOT_STUDIO_REDIRECT_URI")) {
+    $copilotStudioRedirectUris = @($azdValues["COPILOT_STUDIO_REDIRECT_URI"])
+}
+if ($copilotStudioRedirectUris.Count -gt 0) {
+    $bootstrapParameters["CopilotStudioRedirectUris"] = $copilotStudioRedirectUris
 }
 
 Write-Host "Provisioning Entra applications for the active azd environment."

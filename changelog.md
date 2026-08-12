@@ -1,3 +1,22 @@
+## 2026-08-12
+
+### Changed
+- Completed the README audit for the deployed Copilot Studio flow by explicitly documenting PAC scope-persistence verification, write-only secret preservation, and the two accepted broker audience forms: [README.md](README.md).
+- Consolidated local, Entra, Azure, Inspector, and Copilot Studio prerequisites into one README matrix that explains when each tool is required, its purpose, and how to verify it: [README.md](README.md).
+
+## 2026-08-11
+
+### Changed
+- Reconciled Copilot Studio connector scopes during `azd up` to include `openid`, `profile`, and `offline_access` alongside broker access, preserving the write-only connector secret and verifying the persisted update; revision `ca-mcp-y3p3ykro4eike--azd-1786543324` is Running/Healthy and `/mcp` initializes with HTTP 200: [scripts/azd-preprovision.ps1](scripts/azd-preprovision.ps1), [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [.env.example](.env.example), [README.md](README.md), [tests/test_azd_entra_hook.py](tests/test_azd_entra_hook.py).
+- Moved Copilot Studio callback discovery into the repeatable `azd up` preprovision lifecycle: the hook uses a configured PAC profile and Power Platform environment to discover matching connectors, registers all returned callbacks idempotently on the Entra client, and synchronizes generated callback settings without printing access tokens; automated deployment revision `ca-mcp-y3p3ykro4eike--azd-1786455738` is Running/Healthy and `/mcp` returns HTTP 200: [scripts/azd-preprovision.ps1](scripts/azd-preprovision.ps1), [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [.env.example](.env.example), [README.md](README.md), [tests/test_azd_entra_hook.py](tests/test_azd_entra_hook.py).
+- Registered both generated Copilot Studio connector callbacks on the Copilot Studio Entra client, set the `ServiceNow MCP` callback through `COPILOT_STUDIO_REDIRECT_URI`, and completed a full `azd up`; Container App revision `ca-mcp-y3p3ykro4eike--azd-1786453548` is Running/Healthy and `/mcp` returns a valid JSON-RPC initialization response with HTTP 200.
+
+### Fixed
+- Used PAC's full API-definition plus API-properties update form so OAuth scope reconciliation persists on PAC 2.10.1 while preserving write-only connector secrets: [scripts/azd-preprovision.ps1](scripts/azd-preprovision.ps1), [tests/test_azd_entra_hook.py](tests/test_azd_entra_hook.py).
+- Decoded shell-quoted azd environment values as JSON so connector display-name arrays retain valid quoting when consumed by PowerShell preprovision hooks: [scripts/azd-preprovision.ps1](scripts/azd-preprovision.ps1), [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [tests/test_azd_entra_hook.py](tests/test_azd_entra_hook.py).
+- Accepted both the broker's bare client ID and `api://<broker-client-id>` as valid incoming Entra token audiences for the ServiceNow JWT-bearer path, while continuing to reject unrelated audiences; deployed revision `ca-mcp-y3p3ykro4eike--azd-1786481061` is Running/Healthy and `/mcp` initializes with HTTP 200: [mcp_server_servicenow/server.py](mcp_server_servicenow/server.py), [tests/test_incoming_token_validation.py](tests/test_incoming_token_validation.py).
+- Fixed PowerShell 5.1 callback discovery so JSON arrays of connector display names are enumerated as separate names instead of one combined value: [scripts/azd-preprovision.ps1](scripts/azd-preprovision.ps1), [tests/test_azd_entra_hook.py](tests/test_azd_entra_hook.py).
+
 ## 2026-08-10
 
 ### Added

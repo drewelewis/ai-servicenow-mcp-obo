@@ -29,6 +29,8 @@ class AzdEntraHookTests(unittest.TestCase):
         self.assertIn("COPILOT_STUDIO_CLIENT_SECRET", bootstrap)
         self.assertIn("COPILOT_STUDIO_REFRESH_URL", bootstrap)
         self.assertIn("COPILOT_STUDIO_REDIRECT_URI", bootstrap)
+        self.assertIn("CopilotStudioRedirectUris", bootstrap)
+        self.assertIn('Alias("CopilotStudioRedirectUri")', bootstrap)
         self.assertIn("Update-LocalEnvFile", bootstrap)
         self.assertIn('$lines = @(if (Test-Path -Path $Path)', bootstrap)
         self.assertIn("$repositoryRoot = Split-Path -Parent $PSScriptRoot", bootstrap)
@@ -36,6 +38,34 @@ class AzdEntraHookTests(unittest.TestCase):
         self.assertIn("RotateSecrets", bootstrap)
         self.assertNotIn(".env.obo.generated", bootstrap)
         self.assertNotIn("OutputEnvFile", bootstrap)
+
+    def test_preprovision_discovers_power_platform_callbacks(self):
+        hook = (ROOT / "scripts" / "azd-preprovision.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("Get-PowerPlatformRedirectUris", hook)
+        self.assertIn("ConvertFrom-AzdEnvironmentValue", hook)
+        self.assertIn("ConvertFrom-Json -InputObject $trimmedValue", hook)
+        self.assertIn("POWER_PLATFORM_PAC_PROFILE", hook)
+        self.assertIn("POWER_PLATFORM_ENVIRONMENT_ID", hook)
+        self.assertIn("COPILOT_STUDIO_CONNECTOR_DISPLAY_NAMES_JSON", hook)
+        self.assertIn("$parsedConnectorNames | ForEach-Object", hook)
+        self.assertIn("https://service.powerapps.com/", hook)
+        self.assertIn("api.powerapps.com/providers/Microsoft.PowerApps", hook)
+        self.assertIn("Sync-PowerPlatformConnectorScopes", hook)
+        self.assertIn('"offline_access"', hook)
+        self.assertIn("--api-definition-file $definitionPath", hook)
+        self.assertIn("--api-properties-file $propertiesPath", hook)
+        self.assertIn("OAuth scope reconciliation did not persist", hook)
+
+        bootstrap = (ROOT / "scripts" / "bootstrap-entra-obo.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("ConvertFrom-AzdEnvironmentValue", bootstrap)
+        self.assertIn(
+            '"openid profile offline_access $userScopeValue"', bootstrap
+        )
 
     def test_servicenow_setup_uses_only_root_env(self):
         setup = (ROOT / "scripts" / "service_now_setup.py").read_text(

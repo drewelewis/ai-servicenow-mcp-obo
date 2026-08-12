@@ -75,6 +75,26 @@ This is a reusable integration. You bring your own ServiceNow instance and your 
 Entra tenant, and the scripts in this repo configure them for you. The steps below are
 written in plain English so you can follow them from a clean machine.
 
+### Prerequisites and why they are needed
+
+| Prerequisite | When required | Purpose | Verify |
+| --- | --- | --- | --- |
+| [Git](https://git-scm.com/downloads) | All source-based setups | Clones the repository and manages local changes. | `git --version` |
+| [Python 3.10+](https://www.python.org/downloads/) | All setups | Runs the MCP server, ServiceNow setup helpers, login test, and Python tests. | `python --version` |
+| [Node.js](https://nodejs.org/) (current LTS recommended) | Azure deployment and MCP Inspector | Runs the dependency-free `azd` preprovision hook; its bundled `npx` launches MCP Inspector. No project-level npm install is required. | `node --version` and `npx --version` |
+| [Azure CLI (`az`)](https://learn.microsoft.com/cli/azure/install-azure-cli) | Delegated Entra setup and Azure deployment | Signs in to Azure/Entra and lets the provisioning scripts create or reconcile app registrations, permissions, and service principals. | `az version` and `az account show` |
+| [Azure Developer CLI (`azd`)](https://aka.ms/azd) | Azure deployment | Runs the preprovision hook, provisions Bicep resources, builds the image remotely, deploys the Container App, and manages deployment settings. | `azd version` and `azd auth login` |
+| Windows PowerShell 5.1 | Current automated Entra/Azure flow | Executes `scripts/azd-preprovision.ps1` and `scripts/bootstrap-entra-obo.ps1`. The Node preprovision wrapper currently invokes `powershell.exe`. | `$PSVersionTable.PSVersion` |
+| [Power Platform CLI (`pac`)](https://learn.microsoft.com/power-platform/developer/cli/introduction) | Copilot Studio connector automation | Discovers connector callback URLs and reconciles Manual OAuth scopes during `azd up`. Authenticate once after creating the connector. | `pac --version` and `pac auth list` |
+| ServiceNow instance with admin setup credentials | ServiceNow bootstrap | Activates the required plugin and provisions the ServiceNow OAuth/JWT records. Runtime delegated users must be separate non-admin users. | Run `python scripts/service_now_setup.py --check-auth` |
+| Azure subscription and Entra app-registration permissions | Azure/Entra deployment | Hosts the Container App resources and permits creation of the four Entra registrations. Admin-consent permission is recommended; otherwise a tenant admin must grant consent. | Confirm the target subscription with `az account show` |
+| Power Platform environment and Copilot Studio access | Copilot Studio integration | Hosts the custom MCP connector and connection whose callback and OAuth settings are reconciled by PAC. | Confirm the environment in `pac org who` |
+
+Docker is **not** required locally for the documented Azure path because `azd` builds the
+container remotely in Azure Container Registry. PAC is not needed for local ServiceNow/MCP
+testing or the first `azd up`; it becomes required after the Copilot Studio connector exists
+and callback/scope reconciliation is enabled with `POWER_PLATFORM_PAC_PROFILE`.
+
 > **The short version:** once you have a ServiceNow instance and its admin login,
 > `scripts/service_now_setup.py` does the ServiceNow-side setup for you — it activates
 > the required plugin, generates the signing keys, and creates the OAuth/JWT record.
@@ -82,9 +102,9 @@ written in plain English so you can follow them from a clean machine.
 
 ### What you need before you start
 
-1. A computer with Python 3.10 or newer.
-2. A ServiceNow instance (see Step 1) and its admin username and password (see Step 2).
-3. (Only if you want delegated Entra sign-in) The Azure CLI (`az`) installed and signed in.
+For the basic local setup, install Python 3.10 or newer and obtain a ServiceNow instance
+with its admin setup credentials. Add the conditional tools from the prerequisites table
+when you enable delegated Entra sign-in, Azure deployment, Inspector, or Copilot Studio.
 
 ### Step 1: Get a ServiceNow instance (PDI)
 
@@ -356,7 +376,7 @@ What the azd hook and `bootstrap-entra-obo.ps1` do, in order:
 
 **Customization** — override any of these parameters when you run the script:
 `-TenantId`, `-BrokerAppName`, `-InteractiveClientAppName`, `-DownstreamApiAppName`,
-`-CopilotStudioClientAppName`, `-CopilotStudioRedirectUri`, `-BrokerScopeName`,
+`-CopilotStudioClientAppName`, `-CopilotStudioRedirectUris`, `-BrokerScopeName`,
 `-DownstreamScopeName`, `-SecretYears`, `-RotateSecrets`, `-LocalEnvFile`.
 
 > Security note: broker and Copilot Studio client secrets are stored in the git-ignored root
@@ -1339,17 +1359,45 @@ Read these values locally from `.env`; never copy the client secret into source 
 chat. The hook upserts only generated Entra/OAuth keys and preserves unrelated `.env`
 settings.
 
-Copilot Studio generates its callback URL during onboarding. Add it through azd and rerun:
+The first `azd up` provisions the Entra client. After you use those generated Manual OAuth
+values to create the connector in Copilot Studio, authenticate PAC once and configure the
+non-secret discovery inputs in the azd environment:
 
 ```powershell
-azd env set COPILOT_STUDIO_REDIRECT_URI "<callback-url-from-copilot-studio>"
+pac auth create --name ServiceNowCopilot --deviceCode
+azd env set POWER_PLATFORM_PAC_PROFILE "ServiceNowCopilot"
+azd env set POWER_PLATFORM_ENVIRONMENT_ID "<copilot-environment-id>"
+azd env set COPILOT_STUDIO_CONNECTOR_DISPLAY_NAMES_JSON '["ServiceNow MCP"]'
 azd up
 ```
 
-The preprovision hook adds the URI to the existing client, writes
-`COPILOT_STUDIO_REDIRECT_URI` to `.env`, and does not rotate its secret.
+The Copilot environment ID appears in its URL (for example, `Default-<tenant-id>`). On this
+and every later `azd up`, the preprovision hook selects the PAC profile, reads the exact
+connector-specific callback from Power Apps, adds every configured connector callback to
+the existing Entra client, and writes `COPILOT_STUDIO_REDIRECT_URI` plus
+`COPILOT_STUDIO_REDIRECT_URIS_JSON` to the azd environment and `.env`. It never prints the
+Power Apps access token and does not rotate the client secret. If PAC is not on `PATH`, the
+hook uses its standard Windows launcher or an explicit `POWER_PLATFORM_PAC_PATH`.
+
+The hook also reconciles the connector's OAuth scopes to `openid profile offline_access`
+plus the broker's `user_impersonation` scope. `offline_access` is required for Entra to
+issue the refresh token that keeps the connection working after its access token expires.
+For compatibility with PAC 2.10.1, the hook updates the connector using both its API
+definition and OAuth properties, downloads it again, and fails the deployment unless the
+expected scopes persisted. The write-only connector client secret is preserved throughout.
+When this scope is added to an existing connector, repair that connection once in Power
+Apps (**Connections** > connector menu > key icon / **Fix connection**) or create a new
+connection in Copilot Studio and complete browser authorization. Existing OAuth grants
+cannot gain a refresh token noninteractively; later token refreshes are automatic.
+
+`COPILOT_STUDIO_REDIRECT_URI` remains a backward-compatible manual override when
+`POWER_PLATFORM_PAC_PROFILE` is not configured. Discovery fails closed when a configured
+PAC profile, environment, or connector cannot be resolved, preventing a successful deploy
+with a silently stale reply URL.
 Copilot Studio then sends the signed-in user's broker-audience token in the `Authorization`
-header; the server validates it and performs the ServiceNow JWT-bearer exchange as that user.
+header. Entra may encode that audience as either the broker's bare client ID or
+`api://<broker-client-id>`; the server accepts both forms and rejects unrelated audiences
+before performing the ServiceNow JWT-bearer exchange as that user.
 
 **4. Check server logs**
 
