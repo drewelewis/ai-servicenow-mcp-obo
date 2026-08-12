@@ -61,12 +61,34 @@ function Compare-Scopes {
         -not (Compare-Object -ReferenceObject $actualScopes -DifferenceObject $expectedScopes)
 }
 
+function Get-ConnectorOAuthFingerprint {
+    param(
+        [Parameter(Mandatory = $true)][string]$ClientId,
+        [Parameter(Mandatory = $true)][string]$ClientSecret,
+        [Parameter(Mandatory = $true)][string[]]$Scopes
+    )
+
+    $normalizedScopes = @(ConvertTo-NormalizedScopes -Scopes $Scopes) -join " "
+    $fingerprintInput = "$ClientId`n$normalizedScopes`n$ClientSecret"
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fingerprintInput))
+        return ([System.BitConverter]::ToString($hash)).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+        $fingerprintInput = $null
+    }
+}
+
 function Sync-PowerPlatformConnectorScopes {
     param(
         [Parameter(Mandatory = $true)][string]$PacPath,
         [Parameter(Mandatory = $true)][string]$ConnectorId,
         [Parameter(Mandatory = $true)][string]$ConnectorName,
-        [Parameter(Mandatory = $true)][string[]]$ExpectedScopes
+        [Parameter(Mandatory = $true)][string[]]$ExpectedScopes,
+        [Parameter(Mandatory = $true)][string]$ClientId,
+        [Parameter(Mandatory = $true)][string]$ClientSecret,
+        [string]$CurrentFingerprint
     )
 
     $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("servicenow-mcp-connector-" + [Guid]::NewGuid().ToString())
@@ -90,12 +112,19 @@ function Sync-PowerPlatformConnectorScopes {
         if ($oauthSettings.PSObject.Properties["clientSecret"]) {
             throw "Downloaded connector '$ConnectorName' unexpectedly contains a client secret."
         }
-        if (Compare-Scopes -Actual $oauthSettings.scopes -Expected $ExpectedScopes) {
-            Write-Host "Copilot Studio connector '$ConnectorName' already has refresh-capable OAuth scopes."
+        $expectedFingerprint = Get-ConnectorOAuthFingerprint `
+            -ClientId $ClientId `
+            -ClientSecret $ClientSecret `
+            -Scopes $ExpectedScopes
+        $scopesMatch = Compare-Scopes -Actual $oauthSettings.scopes -Expected $ExpectedScopes
+        if ($scopesMatch -and $oauthSettings.clientId -eq $ClientId -and $CurrentFingerprint -eq $expectedFingerprint) {
+            Write-Host "Copilot Studio connector '$ConnectorName' already has the expected OAuth configuration."
             return
         }
 
         $oauthSettings.scopes = @($ExpectedScopes)
+        $oauthSettings.clientId = $ClientId
+        $oauthSettings | Add-Member -NotePropertyName clientSecret -NotePropertyValue $ClientSecret -Force
         Set-Content -Path $propertiesPath -Value ($apiProperties | ConvertTo-Json -Depth 100) -Encoding UTF8
         & $PacPath connector update `
             --connector-id $ConnectorId `
@@ -112,7 +141,15 @@ function Sync-PowerPlatformConnectorScopes {
         if (-not (Compare-Scopes -Actual $updatedScopes -Expected $ExpectedScopes)) {
             throw "OAuth scope reconciliation did not persist for Copilot Studio connector '$ConnectorName'."
         }
-        Write-Host "Updated Copilot Studio connector '$ConnectorName' with refresh-capable OAuth scopes."
+        $updatedClientId = $updatedProperties.properties.connectionParameters.token.oAuthSettings.clientId
+        if ($updatedClientId -ne $ClientId) {
+            throw "OAuth client ID reconciliation did not persist for Copilot Studio connector '$ConnectorName'."
+        }
+        azd env set COPILOT_STUDIO_CONNECTOR_OAUTH_FINGERPRINT $expectedFingerprint | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not store the OAuth configuration fingerprint for Copilot Studio connector '$ConnectorName'."
+        }
+        Write-Host "Updated Copilot Studio connector '$ConnectorName' with the expected OAuth configuration."
     } finally {
         Remove-Item -Path $tempRoot, $updatedRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -183,6 +220,15 @@ function Get-PowerPlatformRedirectUris {
     if ([string]::IsNullOrWhiteSpace($brokerClientId)) {
         throw "SERVICENOW_OBO_CLIENT_ID is required to reconcile Copilot Studio OAuth scopes."
     }
+    $copilotClientId = $AzdValues["COPILOT_STUDIO_CLIENT_ID"]
+    if ([string]::IsNullOrWhiteSpace($copilotClientId)) {
+        throw "COPILOT_STUDIO_CLIENT_ID is required to reconcile Copilot Studio OAuth settings."
+    }
+    $copilotClientSecret = $AzdValues["COPILOT_STUDIO_CLIENT_SECRET"]
+    if ([string]::IsNullOrWhiteSpace($copilotClientSecret)) {
+        throw "COPILOT_STUDIO_CLIENT_SECRET is required to reconcile Copilot Studio OAuth settings."
+    }
+    $currentOAuthFingerprint = $AzdValues["COPILOT_STUDIO_CONNECTOR_OAUTH_FINGERPRINT"]
     $expectedScopes = @(
         "openid",
         "profile",
@@ -232,7 +278,10 @@ function Get-PowerPlatformRedirectUris {
             -PacPath $pacPath `
             -ConnectorId $matchingPacConnectors[0].ConnectorId `
             -ConnectorName $connectorName `
-            -ExpectedScopes $expectedScopes
+            -ExpectedScopes $expectedScopes `
+            -ClientId $copilotClientId `
+            -ClientSecret $copilotClientSecret `
+            -CurrentFingerprint $currentOAuthFingerprint
 
         $redirectUris += $redirectUrl
         Write-Host "Discovered the OAuth callback for Copilot Studio connector '$connectorName'."

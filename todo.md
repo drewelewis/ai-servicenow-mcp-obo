@@ -116,6 +116,7 @@ This file tracks planned and in-progress work for general repository development
 
 ## Done
 
+- [x] Preserve the write-only Copilot connector secret during PAC OAuth reconciliation, gate updates with a non-secret configuration fingerprint, and verify full deployment revision `ca-mcp-y3p3ykro4eike--azd-1786557779`. (2026-08-12)
 - [x] Document how to replace and rebind a stale Copilot Studio OAuth connection when in-place Review returns a connection-access error. (2026-08-12)
 - [x] Fix the production ServiceNow JWT auth factory audience default, add regression coverage for Copilot Studio's `api://<broker-client-id>` token form, and deploy verified revision `ca-mcp-y3p3ykro4eike--azd-1786556669`. (2026-08-12)
 - [x] Add a consolidated README prerequisites matrix covering Git, Python, Node/npx, Azure CLI, azd, Windows PowerShell, PAC, ServiceNow, Azure/Entra permissions, and Power Platform, including purpose and verification commands. (2026-08-12)

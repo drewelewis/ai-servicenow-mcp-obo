@@ -58,6 +58,10 @@ class AzdEntraHookTests(unittest.TestCase):
         self.assertIn("--api-definition-file $definitionPath", hook)
         self.assertIn("--api-properties-file $propertiesPath", hook)
         self.assertIn("OAuth scope reconciliation did not persist", hook)
+        self.assertIn("Get-ConnectorOAuthFingerprint", hook)
+        self.assertIn("-NotePropertyName clientSecret", hook)
+        self.assertIn("COPILOT_STUDIO_CONNECTOR_OAUTH_FINGERPRINT", hook)
+        self.assertIn("OAuth client ID reconciliation did not persist", hook)
 
         bootstrap = (ROOT / "scripts" / "bootstrap-entra-obo.ps1").read_text(
             encoding="utf-8"

@@ -1385,6 +1385,9 @@ issue the refresh token that keeps the connection working after its access token
 For compatibility with PAC 2.10.1, the hook updates the connector using both its API
 definition and OAuth properties, downloads it again, and fails the deployment unless the
 expected scopes persisted. The write-only connector client secret is preserved throughout.
+After a successful update, azd stores a SHA-256 OAuth configuration fingerprint (never the
+secret itself) so unchanged deployments do not rewrite the connector or disturb working
+connections; changing the scopes, client ID, or generated secret triggers reconciliation.
 When this scope is added to an existing connector, repair that connection once in Power
 Apps (**Connections** > connector menu > key icon / **Fix connection**) or create a new
 connection in Copilot Studio and complete browser authorization. Existing OAuth grants
