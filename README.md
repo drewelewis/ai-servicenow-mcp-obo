@@ -1390,6 +1390,14 @@ Apps (**Connections** > connector menu > key icon / **Fix connection**) or creat
 connection in Copilot Studio and complete browser authorization. Existing OAuth grants
 cannot gain a refresh token noninteractively; later token refreshes are automatic.
 
+If Copilot Studio marks the old connection **Stale** and **Review** reports `The request had
+a connection that the user did not have access to`, the old OAuth connection is no longer
+repairable from that pane. Create a new connection for **MCP ServiceNow Server**, complete
+the Entra authorization, and select the new connection for every affected tool under the
+agent's connection settings. Keep the stale connection until the agent succeeds with the
+replacement; then remove it. This preserves the tool binding while avoiding a broken
+connection reference.
+
 `COPILOT_STUDIO_REDIRECT_URI` remains a backward-compatible manual override when
 `POWER_PLATFORM_PAC_PROFILE` is not configured. Discovery fails closed when a configured
 PAC profile, environment, or connector cannot be resolved, preventing a successful deploy

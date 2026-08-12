@@ -3,6 +3,7 @@
 ### Changed
 - Completed the README audit for the deployed Copilot Studio flow by explicitly documenting PAC scope-persistence verification, write-only secret preservation, and the two accepted broker audience forms: [README.md](README.md).
 - Consolidated local, Entra, Azure, Inspector, and Copilot Studio prerequisites into one README matrix that explains when each tool is required, its purpose, and how to verify it: [README.md](README.md).
+- Documented the replacement-and-rebind recovery path when an old Copilot Studio OAuth connection becomes Stale and its Review action returns a connection-access error: [README.md](README.md).
 
 ## 2026-08-11
 

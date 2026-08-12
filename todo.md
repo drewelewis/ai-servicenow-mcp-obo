@@ -116,6 +116,7 @@ This file tracks planned and in-progress work for general repository development
 
 ## Done
 
+- [x] Document how to replace and rebind a stale Copilot Studio OAuth connection when in-place Review returns a connection-access error. (2026-08-12)
 - [x] Fix the production ServiceNow JWT auth factory audience default, add regression coverage for Copilot Studio's `api://<broker-client-id>` token form, and deploy verified revision `ca-mcp-y3p3ykro4eike--azd-1786556669`. (2026-08-12)
 - [x] Add a consolidated README prerequisites matrix covering Git, Python, Node/npx, Azure CLI, azd, Windows PowerShell, PAC, ServiceNow, Azure/Entra permissions, and Power Platform, including purpose and verification commands. (2026-08-12)
 - [x] Audit the README against the deployed Copilot Studio flow and explicitly document PAC scope-persistence verification, client-secret preservation, and accepted broker token audience forms. (2026-08-12)
