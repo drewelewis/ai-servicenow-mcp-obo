@@ -1467,7 +1467,10 @@ def create_servicenow_jwt_bearer_user_auth(
     parsed_audiences = (
         _split_csv_values(expected_audiences)
         if isinstance(expected_audiences, str)
-        else (expected_audiences or [upstream_client_id])
+        else (
+            expected_audiences
+            or [upstream_client_id, f"api://{upstream_client_id}"]
+        )
     )
     parsed_issuers = (
         _split_csv_values(expected_issuers)
