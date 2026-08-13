@@ -116,6 +116,12 @@ This file tracks planned and in-progress work for general repository development
 
 ## Done
 
+- [x] Document why Foundry emits its OAuth callback after credential-provider creation and how this differs from Copilot Studio callback discovery. (2026-08-12)
+- [x] Reconcile Foundry credential-provider callback replacement exactly and preserve callback-array JSON through Windows azd persistence. (2026-08-12)
+- [x] Persist the deployed Streamable HTTP endpoint as `MCP_SERVER_URL` in root `.env` and the active azd environment after provisioning. (2026-08-12)
+- [x] Fix new-client delegated-permission reconciliation and verify all nine dedicated Foundry settings populate root `.env` and the active azd environment. (2026-08-12)
+- [x] Provision a dedicated Foundry OAuth client through `azd up` and persist its independent ID, secret, endpoints, scopes, and callbacks to root `.env`. (2026-08-12)
+- [x] Document a Microsoft Foundry portal test path for the deployed delegated MCP server and distinguish temporary bearer-token testing from durable OAuth2 integration. (2026-08-12)
 - [x] Add a newcomer-friendly README overview of the Copilot Studio OAuth flow, both token exchanges, and Microsoft 365 Agents SDK design options. (2026-08-12)
 - [x] Preserve the write-only Copilot connector secret during PAC OAuth reconciliation, gate updates with a non-secret configuration fingerprint, and verify full deployment revision `ca-mcp-y3p3ykro4eike--azd-1786557779`. (2026-08-12)
 - [x] Document how to replace and rebind a stale Copilot Studio OAuth connection when in-place Review returns a connection-access error. (2026-08-12)

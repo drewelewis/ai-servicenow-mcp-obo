@@ -9,6 +9,10 @@ hooks:
     run: ./scripts/azd-preprovision.js
     interactive: true
     continueOnError: false
+  postprovision:
+    run: ./scripts/azd-postprovision.js
+    interactive: false
+    continueOnError: false
 
 services:
   mcp:

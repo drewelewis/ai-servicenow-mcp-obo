@@ -347,5 +347,18 @@ if ($copilotStudioRedirectUris.Count -gt 0) {
     $bootstrapParameters["CopilotStudioRedirectUris"] = $copilotStudioRedirectUris
 }
 
+$foundryRedirectUrisJson = $azdValues["FOUNDRY_REDIRECT_URIS_JSON"]
+if (-not [string]::IsNullOrWhiteSpace($foundryRedirectUrisJson)) {
+    try {
+        $foundryRedirectUris = @((ConvertFrom-Json -InputObject $foundryRedirectUrisJson) | ForEach-Object { $_ })
+    } catch {
+        throw "FOUNDRY_REDIRECT_URIS_JSON must be a JSON array of Foundry credential-provider redirect URIs."
+    }
+    if ($foundryRedirectUris.Count -eq 0) {
+        throw "FOUNDRY_REDIRECT_URIS_JSON must contain at least one redirect URI."
+    }
+    $bootstrapParameters["FoundryRedirectUris"] = $foundryRedirectUris
+}
+
 Write-Host "Provisioning Entra applications for the active azd environment."
 & (Join-Path $PSScriptRoot "bootstrap-entra-obo.ps1") @bootstrapParameters

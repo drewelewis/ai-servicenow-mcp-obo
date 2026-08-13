@@ -1,6 +1,16 @@
 ## 2026-08-12
 
+### Added
+- Added an azd postprovision hook that derives the complete `/mcp` endpoint from `SERVICE_MCP_URI` and persists it as `MCP_SERVER_URL` in both the active azd environment and root `.env`: [azure.yaml](azure.yaml), [scripts/azd-postprovision.js](scripts/azd-postprovision.js), [scripts/azd-postprovision.ps1](scripts/azd-postprovision.ps1), [.env.example](.env.example), [README.md](README.md), [tests/test_azd_entra_hook.py](tests/test_azd_entra_hook.py).
+- Added a fifth, dedicated Microsoft Foundry confidential client to `azd up`, with an independent redirect URI, secret, delegated broker permission, and complete `FOUNDRY_*` persistence in the active azd environment and root `.env`: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [scripts/azd-preprovision.ps1](scripts/azd-preprovision.ps1), [.env.example](.env.example), [README.md](README.md), [tests/test_azd_entra_hook.py](tests/test_azd_entra_hook.py).
+- Added a Microsoft Foundry portal test runbook for the deployed Streamable HTTP MCP endpoint, including a clipboard-only delegated token, temporary Custom keys project connection, restricted/approved `list_incidents` test, and the dedicated OAuth2 design recommended for durable Foundry use: [README.md](README.md).
+
+### Fixed
+- Replaced stale Foundry web callbacks during preprovision instead of accumulating them, and preserved embedded JSON quotes when persisting callback arrays through native `azd env set` on Windows: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [tests/test_azd_entra_hook.py](tests/test_azd_entra_hook.py).
+- Handled a new Entra client with no existing delegated `resourceAccess` collection under PowerShell strict mode, allowing Foundry preprovision to complete and populate all generated `FOUNDRY_*` settings: [scripts/bootstrap-entra-obo.ps1](scripts/bootstrap-entra-obo.ps1), [tests/test_azd_entra_hook.py](tests/test_azd_entra_hook.py).
+
 ### Changed
+- Explained why Foundry reveals its API Management OAuth redirect URL only after credential-provider creation, contrasted Copilot Studio's automatic callback discovery, and corrected the Windows PowerShell callback-persistence example: [README.md](README.md).
 - Added a newcomer-oriented explanation of the two OAuth token exchanges, delegated OBO terminology, access/refresh token behavior, and when Microsoft 365 Agents SDK can replace or complement Copilot Studio without replacing the MCP or ServiceNow authorization boundaries: [README.md](README.md).
 - Completed the README audit for the deployed Copilot Studio flow by explicitly documenting PAC scope-persistence verification, write-only secret preservation, and the two accepted broker audience forms: [README.md](README.md).
 - Consolidated local, Entra, Azure, Inspector, and Copilot Studio prerequisites into one README matrix that explains when each tool is required, its purpose, and how to verify it: [README.md](README.md).

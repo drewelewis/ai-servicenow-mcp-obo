@@ -173,7 +173,7 @@ written in plain English so you can follow them from a clean machine.
 | Windows PowerShell 5.1 | Current automated Entra/Azure flow | Executes `scripts/azd-preprovision.ps1` and `scripts/bootstrap-entra-obo.ps1`. The Node preprovision wrapper currently invokes `powershell.exe`. | `$PSVersionTable.PSVersion` |
 | [Power Platform CLI (`pac`)](https://learn.microsoft.com/power-platform/developer/cli/introduction) | Copilot Studio connector automation | Discovers connector callback URLs and reconciles Manual OAuth scopes during `azd up`. Authenticate once after creating the connector. | `pac --version` and `pac auth list` |
 | ServiceNow instance with admin setup credentials | ServiceNow bootstrap | Activates the required plugin and provisions the ServiceNow OAuth/JWT records. Runtime delegated users must be separate non-admin users. | Run `python scripts/service_now_setup.py --check-auth` |
-| Azure subscription and Entra app-registration permissions | Azure/Entra deployment | Hosts the Container App resources and permits creation of the four Entra registrations. Admin-consent permission is recommended; otherwise a tenant admin must grant consent. | Confirm the target subscription with `az account show` |
+| Azure subscription and Entra app-registration permissions | Azure/Entra deployment | Hosts the Container App resources and permits creation of the five Entra registrations. Admin-consent permission is recommended; otherwise a tenant admin must grant consent. | Confirm the target subscription with `az account show` |
 | Power Platform environment and Copilot Studio access | Copilot Studio integration | Hosts the custom MCP connector and connection whose callback and OAuth settings are reconciled by PAC. | Confirm the environment in `pac org who` |
 
 Docker is **not** required locally for the documented Azure path because `azd` builds the
@@ -406,7 +406,7 @@ user has that email, ServiceNow rejects the exchange with `invalid_grant` / `Use
 
 For Azure deployments, `azd up` owns Entra provisioning through the `preprovision` hook in
 [azure.yaml](azure.yaml). You do **not** run a separate bootstrap command or create app
-registrations by hand. The hook reuses registrations by display name and creates these four
+registrations by hand. The hook reuses registrations by display name and creates these five
 registrations when missing:
 
 | App (display name) | Why it exists | Generated settings |
@@ -415,17 +415,20 @@ registrations when missing:
 | `servicenow-mcp-obo-broker` | Protected API representing the MCP server. It exposes `user_impersonation`; incoming user tokens use this app as their audience, which lets the server validate that the token was issued for MCP. It also acts as the confidential middle tier for the optional direct Entra OBO path. | `SERVICENOW_OBO_CLIENT_ID`, `SERVICENOW_OBO_CLIENT_SECRET`, `SERVICENOW_OBO_USER_SCOPE`, `SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID` |
 | `servicenow-mcp-obo-downstream-api` | Distinct resource audience for the optional direct Entra OBO path. Keeping it separate from the broker gives OBO a real second hop instead of exchanging a token back to the same audience. | `SERVICENOW_OBO_SCOPE` |
 | `servicenow-mcp-copilot-studio-client` | Confidential OAuth client for Copilot Studio. It owns Copilot Studio's callback URI and secret and has delegated permission to request the broker's `user_impersonation` scope as the signed-in user. | `COPILOT_STUDIO_CLIENT_ID`, `COPILOT_STUDIO_CLIENT_SECRET`, `COPILOT_STUDIO_SCOPE` |
+| `servicenow-mcp-foundry-client` | Confidential OAuth client for Microsoft Foundry. It owns a separate Foundry callback and secret and independently requests the broker's delegated scope. | `FOUNDRY_CLIENT_ID`, `FOUNDRY_CLIENT_SECRET`, `FOUNDRY_SCOPE` |
 
-Why four registrations? The **caller** and **protected API** must be separate security
+Why five registrations? The **callers** and **protected API** must be separate security
 principals, and each caller type has different credential and redirect requirements. Copilot
 Studio is a confidential web client, while local device-code testing needs a public client
-that holds no secret. The broker is the MCP token audience. The downstream API supplies the
-separate second audience required by the optional direct Entra OBO flow.
+that holds no secret. Foundry is a second confidential client with its own lifecycle,
+callback, and credential. The broker is the MCP token audience. The downstream API supplies
+the separate second audience required by the optional direct Entra OBO flow.
 
 For the deployed Copilot Studio → MCP → ServiceNow JWT-bearer path, the broker and Copilot
 Studio client are the production runtime pair. The interactive client supports local testing,
 and the downstream API supports the alternative direct Entra OBO mode. `azd up` provisions
-all four so both documented authentication modes and the test workflow remain available.
+all five so Copilot Studio, Foundry, both documented authentication modes, and local testing
+remain independently available.
 See [obo-flow-options.md](obo-flow-options.md) for the full comparison and diagrams.
 
 **Prerequisites**
@@ -445,7 +448,7 @@ az login
 
 What the azd hook and `bootstrap-entra-obo.ps1` do, in order:
 
-1. Ensures the four app registrations exist (creating any that are missing) and a service
+1. Ensures the five app registrations exist (creating any that are missing) and a service
    principal for each.
 2. Marks the interactive client as a public client (`http://localhost` redirect).
 3. Exposes the `user_impersonation` scope (token version 2) on the broker and downstream apps
@@ -454,18 +457,20 @@ What the azd hook and `bootstrap-entra-obo.ps1` do, in order:
    both its access token and id token, so the token the MCP server validates carries the
    delegated user's identity (`email`/`upn` appear only when also set on the user).
 5. Grants delegated permissions for interactive client → broker, Copilot Studio → broker,
-  and broker → downstream, then attempts admin consent.
-6. Creates one-year broker and Copilot Studio client secrets when missing. Existing azd
-  secrets are reused; pass `-RotateSecrets` only for an intentional rotation.
+  Foundry → broker, and broker → downstream, then attempts admin consent.
+6. Creates independent one-year broker, Copilot Studio, and Foundry client secrets when
+  missing. Existing azd secrets are reused; pass `-RotateSecrets` only for an intentional
+  rotation.
 7. Upserts generated values directly into the single root `.env`; azd mode also stores them
   in the active azd environment for Bicep and deployment use.
 
 **Customization** — override any of these parameters when you run the script:
 `-TenantId`, `-BrokerAppName`, `-InteractiveClientAppName`, `-DownstreamApiAppName`,
-`-CopilotStudioClientAppName`, `-CopilotStudioRedirectUris`, `-BrokerScopeName`,
+`-CopilotStudioClientAppName`, `-CopilotStudioRedirectUris`, `-FoundryClientAppName`,
+`-FoundryRedirectUris`, `-BrokerScopeName`,
 `-DownstreamScopeName`, `-SecretYears`, `-RotateSecrets`, `-LocalEnvFile`.
 
-> Security note: broker and Copilot Studio client secrets are stored in the git-ignored root
+> Security note: broker, Copilot Studio, and Foundry client secrets are stored in the git-ignored root
 > `.env`; azd mode also stores them in the active azd environment. Values are not printed.
 > Reruns reuse existing azd secrets; use
 > `-RotateSecrets` only when intentionally rotating credentials. Never commit generated env
@@ -1342,10 +1347,11 @@ azd env set SERVICENOW_SN_JWT_CLIENT_SECRET "<servicenow-client-secret>"
 azd up
 ```
 
-`azd up` first provisions/reuses the four Entra registrations and stores their generated IDs,
+`azd up` first provisions/reuses the five Entra registrations and stores their generated IDs,
 scopes, and secrets in the active azd environment. It then provisions the infrastructure,
-builds the image in ACR, and deploys the Container App. On success it prints the service
-endpoint (the `SERVICE_MCP_URI` output); the MCP URL is that endpoint with `/mcp` appended.
+builds the image in ACR, and deploys the Container App. After provisioning, the postprovision
+hook appends `/mcp` to the `SERVICE_MCP_URI` output and writes the complete endpoint to both
+the active azd environment and root `.env` as `MCP_SERVER_URL`.
 
 > **Security note:** the `/mcp` endpoint is publicly reachable and `tools/list` is
 > currently unauthenticated; actual tool **calls** require a valid delegated bearer token.
@@ -1360,7 +1366,7 @@ and logs.
 **1. Get the endpoint URL**
 
 ```powershell
-azd env get-values | Select-String SERVICE_MCP_URI
+azd env get-value MCP_SERVER_URL
 ```
 
 The MCP URL is that value with `/mcp` appended (for example
@@ -1422,6 +1428,105 @@ difference for the deployed server is the Inspector **URL** — point it at the 
 > exercise the ServiceNow JWT-bearer path **directly** (not through the remote MCP server),
 > so they validate auth and configuration but not the deployed ingress. MCP Inspector
 > against the `/mcp` URL is what tests the Azure-hosted server end-to-end.
+
+### Test from Microsoft Foundry
+
+[Microsoft Foundry Agent Service](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/model-context-protocol)
+can call this server as a public remote Streamable HTTP MCP tool. For the first test, use a
+short-lived delegated Entra token in a Foundry **Custom keys** project connection. This is
+the quickest way to validate Foundry → MCP → ServiceNow without creating another OAuth
+client. It is a test configuration, not the durable production design: the token normally
+expires in 60–90 minutes and the custom-key connection cannot refresh it.
+
+**Prerequisites**
+
+- A Foundry project and model deployment.
+- **Foundry User** on the project to create/test an agent.
+- **Foundry Project Manager** if you create the project connection yourself.
+- The deployed MCP URL: `https://ca-mcp-<token>.<region>.azurecontainerapps.io/mcp`.
+
+**1. Copy a delegated broker token without printing it**
+
+Run this from the repository root in Windows PowerShell. Complete the device-code sign-in
+as the Entra user mapped to a non-admin ServiceNow user. The access token is written only
+to the clipboard:
+
+```powershell
+python -c "import msal,os,sys; from dotenv import load_dotenv; load_dotenv(); t=os.environ['SERVICENOW_SN_JWT_TENANT_ID']; pc=os.environ.get('SERVICENOW_OBO_PUBLIC_CLIENT_ID') or os.environ['SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID']; up=os.environ['SERVICENOW_SN_JWT_UPSTREAM_CLIENT_ID']; app=msal.PublicClientApplication(pc, authority='https://login.microsoftonline.com/'+t); f=app.initiate_device_flow(scopes=[up+'/.default']); print(f['message'], file=sys.stderr); r=app.acquire_token_by_device_flow(f); token=r.get('access_token'); sys.stdout.write(token or ('ERROR: '+str(r.get('error_description'))))" | Set-Clipboard
+```
+
+**2. Create the temporary project connection**
+
+1. Open [Microsoft Foundry](https://ai.azure.com/) and select your project.
+2. Open **Management center** → **Connected resources** → **New connection**.
+3. Choose **Custom keys** and name it `servicenow-mcp-test`.
+4. Add key `Authorization` with value `Bearer ` followed by the token from the clipboard.
+5. Save the connection. Never commit or paste this token into chat or source files.
+
+**3. Add the MCP tool and test it**
+
+1. Open **Build** → **Tools**, select **Connect a tool** → **Custom** → **MCP**. The same
+  flow may appear as **Add tool** from an agent configuration page.
+2. Set the tool name/server label to `servicenow-mcp`.
+3. Set the endpoint to the deployed URL ending in `/mcp`.
+4. Select the `servicenow-mcp-test` project connection.
+5. Allow only `list_incidents` for the first test and keep approval set to **Always**.
+6. Add the tool to a prompt agent whose instructions say to use `list_incidents` for the
+  signed-in user's ServiceNow incidents.
+7. In the playground, ask `Get my incidents`, review the requested tool and arguments, and
+  approve the call.
+
+A successful response proves the full Foundry → public MCP endpoint → incoming Entra token
+validation → ServiceNow JWT-bearer exchange → delegated incident query path. HTTP 401 means
+the project connection token is missing or expired; acquire a new token and replace the
+`Authorization` value. Keep tool approval enabled for write tools.
+
+**Durable Foundry authentication**
+
+Save a Foundry **OAuth Identity Passthrough** credential provider once to obtain its unique
+redirect URL. Foundry cannot display the final URL before saving because Azure API Management
+creates the credential-provider identifier used in the URL during creation. This callback is
+where Entra returns the authorization code so Foundry can complete the token exchange and
+manage access-token refresh.
+
+Copilot Studio has the same OAuth callback requirement, but its custom-connector lifecycle
+hides more of the process. The preprovision hook discovers Copilot Studio callbacks through
+PAC and the Power Apps API. Foundry displays its newly generated callback explicitly and
+requires you to register it before using the provider. This difference in UI does not change
+the OAuth flow, and each host must keep its own Entra client, secret, and callback.
+
+Persist the non-secret Foundry callback in the active azd environment and rerun the normal
+deployment lifecycle. In Windows PowerShell, retain the escaped double quotes so the native
+`azd` command stores a valid JSON string array:
+
+```powershell
+azd env set FOUNDRY_REDIRECT_URIS_JSON '[\"https://global.consent.azure-apim.net/redirect/<foundry-callback-id>\"]'
+azd up
+```
+
+The hook provisions a dedicated `servicenow-mcp-foundry-client`, registers only the Foundry
+callback on it, removes callbacks from older versions of that Foundry credential provider,
+grants delegated broker access, creates an independent secret, and writes the complete
+settings to both the active azd environment and root `.env`:
+
+| Foundry field | Root `.env` setting |
+| --- | --- |
+| Client ID | `FOUNDRY_CLIENT_ID` |
+| Client secret | `FOUNDRY_CLIENT_SECRET` |
+| Token URL | `FOUNDRY_TOKEN_URL` |
+| Auth URL | `FOUNDRY_AUTHORIZATION_URL` |
+| Refresh URL | `FOUNDRY_REFRESH_URL` |
+| Scopes | `FOUNDRY_SCOPE` |
+
+Use the deployed `/mcp` endpoint. Foundry then manages user consent and refreshes Token 1.
+The MCP server and ServiceNow token exchange remain unchanged. Do not use any
+`COPILOT_STUDIO_*` value in Foundry: the two hosts share only the broker API permission and
+MCP endpoint, while their client IDs, secrets, redirects, and OAuth connections stay separate.
+
+Foundry's `user-entra-token` connection accepts an audience but does not expose an explicit
+delegated-scope setting in the documented configuration. Because this server requires the
+custom broker `user_impersonation` scope, use explicit OAuth2 for the durable design rather
+than assuming audience-only passthrough will grant that scope.
 
 ### Connect from Copilot Studio
 

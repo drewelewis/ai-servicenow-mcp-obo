@@ -11,7 +11,17 @@ class AzdEntraHookTests(unittest.TestCase):
 
         self.assertIn("preprovision:", manifest)
         self.assertIn("./scripts/azd-preprovision.js", manifest)
+        self.assertIn("postprovision:", manifest)
+        self.assertIn("./scripts/azd-postprovision.js", manifest)
         self.assertIn("continueOnError: false", manifest)
+
+        postprovision = (ROOT / "scripts" / "azd-postprovision.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("SERVICE_MCP_URI", postprovision)
+        self.assertIn("MCP_SERVER_URL", postprovision)
+        self.assertIn('TrimEnd(\'/\')', postprovision)
+        self.assertIn('Join-Path $repositoryRoot ".env"', postprovision)
 
     def test_python_package_discovery_excludes_infrastructure(self):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -38,6 +48,34 @@ class AzdEntraHookTests(unittest.TestCase):
         self.assertIn("RotateSecrets", bootstrap)
         self.assertNotIn(".env.obo.generated", bootstrap)
         self.assertNotIn("OutputEnvFile", bootstrap)
+
+    def test_bootstrap_provisions_separate_foundry_client_for_azd(self):
+        bootstrap = (ROOT / "scripts" / "bootstrap-entra-obo.ps1").read_text(
+            encoding="utf-8"
+        )
+        hook = (ROOT / "scripts" / "azd-preprovision.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("servicenow-mcp-foundry-client", bootstrap)
+        self.assertIn("FoundryRedirectUris", bootstrap)
+        self.assertIn("FOUNDRY_CLIENT_ID", bootstrap)
+        self.assertIn("FOUNDRY_CLIENT_SECRET", bootstrap)
+        self.assertIn("FOUNDRY_AUTHORIZATION_URL", bootstrap)
+        self.assertIn("FOUNDRY_TOKEN_URL", bootstrap)
+        self.assertIn("FOUNDRY_REFRESH_URL", bootstrap)
+        self.assertIn("FOUNDRY_SCOPE", bootstrap)
+        self.assertIn("FOUNDRY_REDIRECT_URIS_JSON", bootstrap)
+        self.assertIn(
+            '$resourceAccess.PSObject.Properties["resourceAccess"]', bootstrap
+        )
+        self.assertIn("Set-WebRedirectUris", bootstrap)
+        self.assertIn(
+            'Set-WebRedirectUris -AppObjectId $foundryClientApp.id', bootstrap
+        )
+        self.assertIn(".Replace('\"', '\\\"')", bootstrap)
+        self.assertIn("FOUNDRY_REDIRECT_URIS_JSON", hook)
+        self.assertIn('$bootstrapParameters["FoundryRedirectUris"]', hook)
 
     def test_preprovision_discovers_power_platform_callbacks(self):
         hook = (ROOT / "scripts" / "azd-preprovision.ps1").read_text(
